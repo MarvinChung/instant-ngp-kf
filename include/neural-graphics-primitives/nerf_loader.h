@@ -118,6 +118,7 @@ struct NerfDataset {
 		return (has_light_dirs ? 3u : 0u) + n_extra_learnable_dims;
 	}
 
+	std::vector<TrainingXForm> get_posterior_extrinsic();
 	NerfDataset add_training_image(nlohmann::json frame, uint8_t *img, uint16_t *depth, uint8_t *alpha, uint8_t *mask);
 	void set_training_image(int frame_idx, const Eigen::Vector2i& image_resolution, const void* pixels, const void* depth_pixels, float depth_scale, bool image_data_on_gpu, EImageDataType image_type, EDepthDataType depth_type, float sharpen_amount = 0.f, bool white_transparent = false, bool black_transparent = false, uint32_t mask_color = 0, const Ray *rays = nullptr);
 

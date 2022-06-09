@@ -1403,10 +1403,12 @@ void Testbed::add_training_image(nlohmann::json frame, uint8_t *img, uint16_t *d
 	m_nerf.training.update_metadata();
 	m_nerf.training.update_transforms();
 
-	// update_training_info_from_dataset();
-
 	// wait until gpu dataset is completed
 	CUDA_CHECK_THROW(cudaDeviceSynchronize());
+}
+
+std::vector<TrainingXForm> Testbed::get_posterior_extrinsic() {
+	return std::move(m_nerf.training.dataset.get_posterior_extrinsic());
 }
 
 void Testbed::train_and_render(bool skip_rendering) {

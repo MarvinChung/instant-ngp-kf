@@ -952,9 +952,18 @@ NerfDataset load_nerfslam(const std::vector<filesystem::path>& jsonpaths, float 
 	return result;
 }
 
+std::vector<TrainingXForm> NerfDataset::get_posterior_extrinsic() {
+	std::vector<TrainingXForm> ret;
+
+	for(size_t i_img = 0; i_img < this->n_images; i_img++){
+		ret.push_back({this->ngp_matrix_to_nerf(this->xforms[i_img].start), this->ngp_matrix_to_nerf(this->xforms[i_img].end)});
+	}
+
+	return std::move(ret);
+}
+
 NerfDataset NerfDataset::add_training_image(nlohmann::json frame, uint8_t *img, uint16_t *depth, uint8_t *alpha, uint8_t *mask) {
 
-	std::cout << "add_training_image [1]" << std::endl;
 	if (!frame.contains("h") || !frame.contains("w") ) {
 		throw std::runtime_error{"No height or width information provided"};
 	}
@@ -1014,8 +1023,6 @@ NerfDataset NerfDataset::add_training_image(nlohmann::json frame, uint8_t *img, 
 		throw std::runtime_error{"No img provided"};
 	}
 
-	
-	std::cout << "add_training_image [2]" << std::endl;
 	if (frame.contains("is_hdr")) {
 		// dst.pixels = load_exr_to_gpu(&dst.res.x(), &dst.res.y(), path.str().c_str(), fix_premult);
 		// Find a way to load exr from memory
@@ -1115,11 +1122,7 @@ NerfDataset NerfDataset::add_training_image(nlohmann::json frame, uint8_t *img, 
 	this->xforms[i_img].start = this->nerf_matrix_to_ngp(this->xforms[i_img].start);
 	this->xforms[i_img].end = this->nerf_matrix_to_ngp(this->xforms[i_img].end);
 
-	std::cout << "add_training_image [3]" << std::endl;
-
 	this->set_training_image(i_img, dst.res, dst.pixels, dst.depth_pixels, dst.depth_scale * this->scale, dst.image_data_on_gpu, dst.image_type, EDepthDataType::UShort, slam.sharpen_amount, dst.white_transparent, dst.black_transparent, dst.mask_color, dst.rays);
-
-	std::cout << "add_training_image [4]" << std::endl;
 
 	if (dst.image_data_on_gpu) {
 		CUDA_CHECK_THROW(cudaFree(dst.pixels));
@@ -1130,8 +1133,6 @@ NerfDataset NerfDataset::add_training_image(nlohmann::json frame, uint8_t *img, 
 	free(dst.depth_pixels);
 
 	CUDA_CHECK_THROW(cudaDeviceSynchronize());
-
-	std::cout << "add_training_image [5]" << std::endl;
 
 	return *this;
 }

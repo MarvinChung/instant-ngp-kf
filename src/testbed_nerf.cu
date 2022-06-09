@@ -1332,9 +1332,6 @@ __global__ void compute_loss_kernel_train_nerf(
 	float img_pdf = 1.0f;
 	uint32_t img = image_idx(ray_idx, n_rays, n_rays_total, n_training_images, cdf_img, &img_pdf);
 
-	if (i == 0)
-		printf("[compute_loss_kernel_train_nerf tid:%d] n_training_images: %d img: %d\n", i, n_training_images, img);
-
 	Eigen::Vector2i resolution = metadata[img].resolution;
 
 	float xy_pdf = 1.0f;
@@ -2434,8 +2431,6 @@ void Testbed::Nerf::Training::update_metadata(int first, int last) {
 		return;
 	}
 
-	std::cout << "[update_metadata] metadata_gpu.size(): " << metadata_gpu.size() << " dataset.metadata.size(): " << dataset.metadata.size() << std::endl;
-
 	metadata_gpu.enlarge(last);
 	CUDA_CHECK_THROW(cudaMemcpy(metadata_gpu.data() + first, dataset.metadata.data() + first, n * sizeof(TrainingImageMetadata), cudaMemcpyHostToDevice));
 }
@@ -2869,8 +2864,6 @@ void Testbed::train_nerf(uint32_t target_batch_size, bool get_loss_scalar, cudaS
 		m_nerf.training.error_map.data.resize(m_nerf.training.error_map.resolution.prod() * m_nerf.training.dataset.n_images);
 		CUDA_CHECK_THROW(cudaMemsetAsync(m_nerf.training.error_map.data.data(), 0, m_nerf.training.error_map.data.get_bytes(), stream));
 	}
-	std::cout << "m_nerf.training.n_images_for_training: " << m_nerf.training.n_images_for_training << std::endl;
-	std::cout << "m_nerf.training.n_images_for_training_prev: " << m_nerf.training.n_images_for_training_prev << std::endl;
 
 	float* envmap_gradient = m_nerf.training.train_envmap ? m_envmap.envmap->gradients() : nullptr;
 	if (envmap_gradient) {
@@ -3277,12 +3270,8 @@ void Testbed::train_nerf_step(uint32_t target_batch_size, uint32_t n_rays_per_ba
 
 	// my debug
 
-	std::vector<uint32_t> counter_cpu(1);
-	std::vector<uint32_t> compacted_counter_cpu(1);
-	printf("numsteps_counter.size(): %d numsteps_counter_compacted.size():%d \n",
-		m_nerf.training.counters_rgb.numsteps_counter.size(),
-		m_nerf.training.counters_rgb.numsteps_counter_compacted.size()
-	);
+	// std::vector<uint32_t> counter_cpu(1);
+	// std::vector<uint32_t> compacted_counter_cpu(1);
 
 	// m_nerf.training.counters_rgb.numsteps_counter.copy_to_host(counter_cpu);
 	// m_nerf.training.counters_rgb.numsteps_counter_compacted.copy_to_host(compacted_counter_cpu);
