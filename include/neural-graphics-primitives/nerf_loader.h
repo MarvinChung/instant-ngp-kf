@@ -111,7 +111,7 @@ struct NerfDataset {
 		CameraDistortion camera_distortion = {};
 		Eigen::Vector2f principal_point = Eigen::Vector2f::Constant(0.5f);
 		Eigen::Vector4f rolling_shutter = Eigen::Vector4f::Zero();
-		uint32_t max_training_keyframes;
+		// uint32_t max_training_keyframes;
 	} slam;
 
 	uint32_t n_extra_dims() const {

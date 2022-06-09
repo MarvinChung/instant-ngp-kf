@@ -289,7 +289,7 @@ public:
 	static ELossType string_to_loss_type(const std::string& str);
 	void reset_network();
 	void create_empty_nerf_dataset(size_t n_images, int aabb_scale = 1, bool is_hdr = false);
-	// void update_training_info_from_dataset();
+	void update_training_info_from_dataset();
 	void load_nerfslam();
 	void load_nerf();
 	void load_mesh();

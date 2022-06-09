@@ -691,6 +691,8 @@ NerfDataset load_nerf(const std::vector<filesystem::path>& jsonpaths, float shar
 	}
 
 	result.sharpness_resolution = { 128, 72 };
+	
+	// Update below in update_training_info_from_dataset
 	result.sharpness_data.enlarge( result.sharpness_resolution.x() * result.sharpness_resolution.y() *  result.n_images );
 
 	// copy / convert images to the GPU
@@ -923,20 +925,15 @@ NerfDataset load_nerfslam(const std::vector<filesystem::path>& jsonpaths, float 
 			}
 		}
 
-		if (json.contains("max_training_keyframes")) {
-			result.slam.max_training_keyframes = int(json["max_training_keyframes"]);
-		}
-		else{
-			result.slam.max_training_keyframes =  result.aabb_scale * 256;
-		}
 	}
 
-	tlog::warning() << "  Preallocate " << result.slam.max_training_keyframes << " images for keyframes in SLAM mode";
-	result.xforms.resize(result.slam.max_training_keyframes);
-	result.metadata.resize(result.slam.max_training_keyframes);
-	result.pixelmemory.resize(result.slam.max_training_keyframes);
-	result.depthmemory.resize(result.slam.max_training_keyframes);
-	result.raymemory.resize(result.slam.max_training_keyframes);
+	result.n_images = 0;
+
+	// result.xforms.resize(result.n_images);
+	// result.metadata.resize(result.n_images);
+	// result.pixelmemory.resize(result.n_images);
+	// result.depthmemory.resize(result.n_images);
+	// result.raymemory.resize(result.n_images);
 
 
 	tlog::success() << "Loaded nerf slam completed"   ;
@@ -947,7 +944,9 @@ NerfDataset load_nerfslam(const std::vector<filesystem::path>& jsonpaths, float 
 	}
 
 	result.sharpness_resolution = { 128, 72 };
-	result.sharpness_data.enlarge( result.sharpness_resolution.x() * result.sharpness_resolution.y() *  result.n_images );
+	
+	// load_nerfslam update sharpness_data in add_training_image
+	// result.sharpness_data.enlarge( result.sharpness_resolution.x() * result.sharpness_resolution.y() *  result.n_images );
 
 	return result;
 }
@@ -972,29 +971,14 @@ NerfDataset NerfDataset::add_training_image(nlohmann::json frame, uint8_t *img, 
 	// }
 
 
-	// debug fix only one image
-	// this->n_images = 1;
-	// // this->n_images += 1;
-	// // assert(this->xforms.size() <= this->n_images);
-	// this->xforms.resize(this->n_images);
-	// this->metadata.resize(this->n_images);
-	// this->pixelmemory.resize(this->n_images);
-	// this->depthmemory.resize(this->n_images);
-	// this->raymemory.resize(this->n_images);
-
-	this->xforms.resize(this->slam.max_training_keyframes);
-	this->metadata.resize(this->slam.max_training_keyframes);
-	this->pixelmemory.resize(this->slam.max_training_keyframes);
-	this->depthmemory.resize(this->slam.max_training_keyframes);
-	this->raymemory.resize(this->slam.max_training_keyframes);
-
-	if (this->n_images >= this->slam.max_training_keyframes) {
-		tlog::warning() << this->n_images << "(Number of keyframes) > " << this->slam.max_training_keyframes
-		<< "(slam_max_keyframes). Only the latest " << this->slam.max_training_keyframes << " will be used in training" ;
-	}
-
-	size_t i_img = this->n_images % this->slam.max_training_keyframes;
 	this->n_images += 1;
+	this->xforms.resize(this->n_images);
+	this->metadata.resize(this->n_images);
+	this->pixelmemory.resize(this->n_images);
+	this->depthmemory.resize(this->n_images);
+	this->raymemory.resize(this->n_images);
+
+	size_t i_img = this->n_images - 1;
 
 	LoadedImageInfo dst;
 	dst = info; // copy defaults
@@ -1117,6 +1101,8 @@ NerfDataset NerfDataset::add_training_image(nlohmann::json frame, uint8_t *img, 
 
 	std::cout << "add_training_image [3]" << std::endl;
 
+	this->sharpness_data.enlarge( this->sharpness_resolution.x() * this->sharpness_resolution.y() *  this->n_images );
+	
 	this->set_training_image(i_img, dst.res, dst.pixels, dst.depth_pixels, dst.depth_scale * this->scale, dst.image_data_on_gpu, dst.image_type, EDepthDataType::UShort, slam.sharpen_amount, dst.white_transparent, dst.black_transparent, dst.mask_color, dst.rays);
 
 	std::cout << "add_training_image [4]" << std::endl;

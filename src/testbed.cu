@@ -1398,12 +1398,7 @@ void Testbed::add_training_image(nlohmann::json frame, uint8_t *img, uint16_t *d
 	CUDA_CHECK_THROW(cudaDeviceSynchronize());
 	
 	m_nerf.training.dataset.add_training_image(frame, img, depth, alpha, mask);
-	m_nerf.training.n_images_for_training = (int)m_nerf.training.dataset.n_images;
-
-	m_nerf.training.update_metadata();
-	m_nerf.training.update_transforms();
-
-	// update_training_info_from_dataset();
+	update_training_info_from_dataset();
 
 	// wait until gpu dataset is completed
 	CUDA_CHECK_THROW(cudaDeviceSynchronize());

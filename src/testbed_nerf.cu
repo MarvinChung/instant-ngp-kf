@@ -2485,116 +2485,7 @@ void Testbed::create_empty_nerf_dataset(size_t n_images, int aabb_scale, bool is
 	m_training_data_available = true;
 }
 
-void Testbed::load_nerfslam() {
-	CUDA_CHECK_THROW(cudaDeviceSynchronize());
-	if (!m_data_path.empty()) {
-		std::vector<fs::path> json_paths;
-		if (m_data_path.is_directory()) {
-			for (const auto& path : fs::directory{m_data_path}) {
-				if (path.is_file() && equals_case_insensitive(path.extension(), "json")) {
-					json_paths.emplace_back(path);
-				}
-			}
-		} else if (equals_case_insensitive(m_data_path.extension(), "msgpack")) {
-			load_snapshot(m_data_path.str());
-			set_train(false);
-			return;
-		} else if (equals_case_insensitive(m_data_path.extension(), "json")) {
-			json_paths.emplace_back(m_data_path);
-		} else {
-			throw std::runtime_error{"NeRF data path must either be a json file or a directory containing json files."};
-		}
-
-		m_nerf.training.dataset = ngp::load_nerfslam(json_paths, m_nerf.sharpen);
-	}
-
-	m_nerf.rgb_activation = m_nerf.training.dataset.is_hdr ? ENerfActivation::Exponential : ENerfActivation::Logistic;
-
-	m_nerf.training.n_images_for_training = (int)m_nerf.training.dataset.n_images;
-
-	m_nerf.training.cam_pos_gradient.resize(m_nerf.training.dataset.slam.max_training_keyframes, Vector3f::Zero());
-	m_nerf.training.cam_pos_gradient_gpu.resize_and_copy_from_host(m_nerf.training.cam_pos_gradient);
-
-	m_nerf.training.cam_exposure.resize(m_nerf.training.dataset.slam.max_training_keyframes, AdamOptimizer<Array3f>(1e-3f));
-	m_nerf.training.cam_pos_offset.resize(m_nerf.training.dataset.slam.max_training_keyframes, AdamOptimizer<Vector3f>(1e-4f));
-	m_nerf.training.cam_rot_offset.resize(m_nerf.training.dataset.slam.max_training_keyframes, RotationAdamOptimizer(1e-4f));
-	m_nerf.training.cam_focal_length_offset = AdamOptimizer<Vector2f>(1e-5f);
-
-	m_nerf.training.cam_rot_gradient.resize(m_nerf.training.dataset.slam.max_training_keyframes, Vector3f::Zero());
-	m_nerf.training.cam_rot_gradient_gpu.resize_and_copy_from_host(m_nerf.training.cam_rot_gradient);
-
-	m_nerf.training.cam_exposure_gradient.resize(m_nerf.training.dataset.slam.max_training_keyframes, Array3f::Zero());
-	m_nerf.training.cam_exposure_gpu.resize_and_copy_from_host(m_nerf.training.cam_exposure_gradient);
-	m_nerf.training.cam_exposure_gradient_gpu.resize_and_copy_from_host(m_nerf.training.cam_exposure_gradient);
-
-	m_nerf.training.cam_focal_length_gradient = Vector2f::Zero();
-	m_nerf.training.cam_focal_length_gradient_gpu.resize_and_copy_from_host(&m_nerf.training.cam_focal_length_gradient, 1);
-
-	m_nerf.training.reset_extra_dims(m_rng);
-
-	if (m_nerf.training.dataset.has_rays) {
-		m_nerf.training.near_distance = 0.0f;
-		// m_nerf.training.optimize_exposure = true;
-	}
-
-	m_nerf.render_distortion = m_nerf.training.dataset.slam.camera_distortion;
-	m_screen_center = Eigen::Vector2f::Constant(1.f) - m_nerf.training.dataset.slam.principal_point;
-
-	if (!is_pot(m_nerf.training.dataset.aabb_scale)) {
-		throw std::runtime_error{std::string{"NeRF dataset's `aabb_scale` must be a power of two, but is "} + std::to_string(m_nerf.training.dataset.aabb_scale)};
-	}
-
-	int max_aabb_scale = 1 << (NERF_CASCADES()-1);
-	if (m_nerf.training.dataset.aabb_scale > max_aabb_scale) {
-		throw std::runtime_error{
-			std::string{"NeRF dataset must have `aabb_scale <= "} + std::to_string(max_aabb_scale) +
-			"`, but is " + std::to_string(m_nerf.training.dataset.aabb_scale) +
-			". You can increase this limit by factors of 2 by incrementing `NERF_CASCADES()` and re-compiling."
-		};
-	}
-
-	m_aabb = BoundingBox{Vector3f::Constant(0.5f), Vector3f::Constant(0.5f)};
-	m_aabb.inflate(0.5f * std::min(1 << (NERF_CASCADES()-1), m_nerf.training.dataset.aabb_scale));
-	m_raw_aabb = m_aabb;
-	m_render_aabb = m_aabb;
-	if (!m_nerf.training.dataset.render_aabb.is_empty()) {
-		m_render_aabb = m_nerf.training.dataset.render_aabb.intersection(m_aabb);
-	}
-
-	m_nerf.max_cascade = 0;
-	while ((1 << m_nerf.max_cascade) < m_nerf.training.dataset.aabb_scale) {
-		++m_nerf.max_cascade;
-	}
-
-	// Perform fixed-size stepping in unit-cube scenes (like original NeRF) and exponential
-	// stepping in larger scenes.
-	m_nerf.cone_angle_constant = m_nerf.training.dataset.aabb_scale <= 1 ? 0.0f : (1.0f / 256.0f);
-
-	m_up_dir = m_nerf.training.dataset.up;
-}
-
-void Testbed::load_nerf() {
-	if (!m_data_path.empty()) {
-		std::vector<fs::path> json_paths;
-		if (m_data_path.is_directory()) {
-			for (const auto& path : fs::directory{m_data_path}) {
-				if (path.is_file() && equals_case_insensitive(path.extension(), "json")) {
-					json_paths.emplace_back(path);
-				}
-			}
-		} else if (equals_case_insensitive(m_data_path.extension(), "msgpack")) {
-			load_snapshot(m_data_path.str());
-			set_train(false);
-			return;
-		} else if (equals_case_insensitive(m_data_path.extension(), "json")) {
-			json_paths.emplace_back(m_data_path);
-		} else {
-			throw std::runtime_error{"NeRF data path must either be a json file or a directory containing json files."};
-		}
-
-		m_nerf.training.dataset = ngp::load_nerf(json_paths, m_nerf.sharpen);
-	}
-
+void Testbed::update_training_info_from_dataset() {
 	m_nerf.rgb_activation = m_nerf.training.dataset.is_hdr ? ENerfActivation::Exponential : ENerfActivation::Logistic;
 
 	m_nerf.training.n_images_for_training = (int)m_nerf.training.dataset.n_images;
@@ -2683,6 +2574,59 @@ void Testbed::load_nerf() {
 	m_nerf.cone_angle_constant = m_nerf.training.dataset.aabb_scale <= 1 ? 0.0f : (1.0f / 256.0f);
 
 	m_up_dir = m_nerf.training.dataset.up;
+}
+
+void Testbed::load_nerfslam() {
+	CUDA_CHECK_THROW(cudaDeviceSynchronize());
+	if (!m_data_path.empty()) {
+		std::vector<fs::path> json_paths;
+		if (m_data_path.is_directory()) {
+			for (const auto& path : fs::directory{m_data_path}) {
+				if (path.is_file() && equals_case_insensitive(path.extension(), "json")) {
+					json_paths.emplace_back(path);
+				}
+			}
+		} else if (equals_case_insensitive(m_data_path.extension(), "msgpack")) {
+			load_snapshot(m_data_path.str());
+			set_train(false);
+			return;
+		} else if (equals_case_insensitive(m_data_path.extension(), "json")) {
+			json_paths.emplace_back(m_data_path);
+		} else {
+			throw std::runtime_error{"NeRF data path must either be a json file or a directory containing json files."};
+		}
+
+		m_nerf.training.dataset = ngp::load_nerfslam(json_paths, m_nerf.sharpen);
+	}
+
+	assert(m_nerf.training.dataset.n_images == 0);
+
+	update_training_info_from_dataset();
+}
+
+void Testbed::load_nerf() {
+	if (!m_data_path.empty()) {
+		std::vector<fs::path> json_paths;
+		if (m_data_path.is_directory()) {
+			for (const auto& path : fs::directory{m_data_path}) {
+				if (path.is_file() && equals_case_insensitive(path.extension(), "json")) {
+					json_paths.emplace_back(path);
+				}
+			}
+		} else if (equals_case_insensitive(m_data_path.extension(), "msgpack")) {
+			load_snapshot(m_data_path.str());
+			set_train(false);
+			return;
+		} else if (equals_case_insensitive(m_data_path.extension(), "json")) {
+			json_paths.emplace_back(m_data_path);
+		} else {
+			throw std::runtime_error{"NeRF data path must either be a json file or a directory containing json files."};
+		}
+
+		m_nerf.training.dataset = ngp::load_nerf(json_paths, m_nerf.sharpen);
+	}
+
+	update_training_info_from_dataset();
 
 }
 
