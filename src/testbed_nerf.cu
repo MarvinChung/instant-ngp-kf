@@ -1278,12 +1278,12 @@ __global__ void compute_loss_kernel_train_nerf(
 	float depth_supervision_lambda,
 	float near_distance
 ) {
-	const uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
-	if (i >= *rays_counter) { return; }
+	const uint32_t tid = threadIdx.x + blockIdx.x * blockDim.x;
+	if (tid >= *rays_counter) { return; }
 
 	// grab the number of samples for this ray, and the first sample
-	uint32_t numsteps = numsteps_in[i*2+0];
-	uint32_t base = numsteps_in[i*2+1];
+	uint32_t numsteps = numsteps_in[tid*2+0];
+	uint32_t base = numsteps_in[tid*2+1];
 
 	coords_in += base;
 	network_output += base * padded_output_width;
@@ -1297,7 +1297,11 @@ __global__ void compute_loss_kernel_train_nerf(
 
 	float depth_ray = 0.f;
 	uint32_t compacted_numsteps = 0;
-	Eigen::Vector3f ray_o = rays_in_unnormalized[i].o;
+	Eigen::Vector3f ray_o = rays_in_unnormalized[tid].o;
+
+	// Vector3f pos_arr[NERF_STEPS()];
+	// float weight_arr[NERF_STEPS()];
+
 	for (; compacted_numsteps < numsteps; ++compacted_numsteps) {
 		if (T < EPSILON) {
 			break;
@@ -1310,13 +1314,23 @@ __global__ void compute_loss_kernel_train_nerf(
 		float cur_depth = (pos - ray_o).norm();
 		float density = network_to_density(float(local_network_output[3]), density_activation);
 
-
 		const float alpha = 1.f - __expf(-density * dt);
 		const float weight = alpha * T;
 		rgb_ray += weight * rgb;
 		hitpoint += weight * pos;
 		depth_ray += weight * cur_depth;
 		T *= (1.f - alpha);
+
+		// if( tid == 0 )
+		// 	printf("weight:%f alpha:%f T:%f density:%f dt:%f \n", weight, alpha, T, density, dt);
+
+		// if (weight != weight){
+		// 	printf("[nan?] weight:%f \n", weight);
+		// 	assert(false);
+		// }
+
+		// pos_arr[compacted_numsteps] = pos;
+		// weight_arr[compacted_numsteps] = weight;
 
 		network_output += padded_output_width;
 		coords_in += 1;
@@ -1325,7 +1339,7 @@ __global__ void compute_loss_kernel_train_nerf(
 
 	// Must be same seed as above to obtain the same
 	// background color.
-	uint32_t ray_idx = ray_indices_in[i];
+	uint32_t ray_idx = ray_indices_in[tid];
 	rng.advance(ray_idx * N_MAX_RANDOM_SAMPLES_PER_RAY());
 
 
@@ -1347,7 +1361,7 @@ __global__ void compute_loss_kernel_train_nerf(
 	Array4f envmap_value;
 	Vector3f dir;
 	if (envmap_data) {
-		dir = rays_in_unnormalized[i].d.normalized();
+		dir = rays_in_unnormalized[tid].d.normalized();
 		envmap_value = read_envmap(envmap_data, envmap_resolution, dir);
 		background_color = envmap_value.head<3>() + background_color * (1.0f - envmap_value.w());
 	}
@@ -1385,8 +1399,8 @@ __global__ void compute_loss_kernel_train_nerf(
 
 	uint32_t compacted_base = atomicAdd(numsteps_counter, compacted_numsteps); // first entry in the array is a counter
 	compacted_numsteps = min(max_samples_compacted - min(max_samples_compacted, compacted_base), compacted_numsteps);
-	numsteps_in[i*2+0] = compacted_numsteps;
-	numsteps_in[i*2+1] = compacted_base;
+	numsteps_in[tid*2+0] = compacted_numsteps;
+	numsteps_in[tid*2+1] = compacted_base;
 	if (compacted_numsteps == 0) {
 		return;
 	}
@@ -1399,7 +1413,7 @@ __global__ void compute_loss_kernel_train_nerf(
 	LossAndGradient lg = loss_and_gradient(rgbtarget, rgb_ray, loss_type);
 	lg.loss /= img_pdf * xy_pdf;
 
-	float target_depth = rays_in_unnormalized[i].d.norm() * ((depth_supervision_lambda > 0.0f && metadata[img].depth) ? read_depth(xy, resolution, metadata[img].depth) : -1.0f);
+	float target_depth = rays_in_unnormalized[tid].d.norm() * ((depth_supervision_lambda > 0.0f && metadata[img].depth) ? read_depth(xy, resolution, metadata[img].depth) : -1.0f);
 	float depth_loss_gradient = target_depth > 0.0f ? (depth_ray - target_depth) * 2.f * depth_supervision_lambda : 0.0f;
 
 	// Note: dividing the gradient by the PDF would cause unbiased loss estimates.
@@ -1410,7 +1424,7 @@ __global__ void compute_loss_kernel_train_nerf(
 
 	float mean_loss = lg.loss.mean();
 	if (loss_output) {
-		loss_output[i] = mean_loss / (float)n_rays;
+		loss_output[tid] = mean_loss / (float)n_rays;
 	}
 
 	if (error_map) {
@@ -1450,13 +1464,15 @@ __global__ void compute_loss_kernel_train_nerf(
 	Array3f rgb_ray2 = { 0.f,0.f,0.f };
 	float depth_ray2 = 0.f;
 	T = 1.f;
-	for (uint32_t j = 0; j < compacted_numsteps; ++j) {
+
+	//  const float inv_dist = 1.0f/(pos_arr[compacted_numsteps-1] - pos_arr[0]).squaredNorm();
+	for (uint32_t k = 0; k < compacted_numsteps; ++k) {
 		if (max_level_rand_training) {
-			max_level_compacted_ptr[j] = max_level;
+			max_level_compacted_ptr[k] = max_level;
 		}
 		// Compact network inputs
-		NerfCoordinate* coord_out = coords_out(j);
-		const NerfCoordinate* coord_in = coords_in(j);
+		NerfCoordinate* coord_out = coords_out(k);
+		const NerfCoordinate* coord_in = coords_in(k);
 		coord_out->copy(*coord_in, coords_out.stride_in_bytes);
 
 		const Vector3f pos = unwarp_position(coord_in->pos.p, aabb);
@@ -1476,6 +1492,42 @@ __global__ void compute_loss_kernel_train_nerf(
 		const Array3f suffix = rgb_ray - rgb_ray2;
 		const Array3f dloss_by_drgb = weight * lg.gradient;
 
+		/*
+		// mip-NeRF 360 regularizer
+		// density
+		float sum_wSkj = 0;
+		for(int j = 0; j < compacted_numsteps; j++)
+		{
+			sum_wSkj += weight_arr[j] * (pos_arr[k] - pos_arr[j]).squaredNorm() * inv_dist;
+			// if (tid == 0)
+			// 	printf("[tid = %d, j = %d] weight_arr[j]:%f pos_arr[k]:%f pos_arr[j]:%f \n", tid, j, weight_arr[j], pos_arr[k], pos_arr[j]	);
+		}
+
+		float sum_diff = 0;
+		for(int i = k+1; i < compacted_numsteps; i++)
+		{
+			// current T = T_k * (1 - alpha) = T_k * exp(-density * dt)
+			Vector3f cur_pos = pos_arr[i];
+			float first_term = (T - weight) * (cur_pos - pos_arr[k]).squaredNorm() * inv_dist;
+			float second_term = 0;
+
+			for(int j = 0; j < compacted_numsteps; j++)
+			{
+				second_term += weight_arr[j] * (cur_pos - pos_arr[j]).squaredNorm() * inv_dist;
+			}
+
+			sum_diff += weight_arr[i] * (first_term - second_term);
+			if (tid == 0)
+				printf("[tid = %d, i = %d] weight_arr[i]:%f first_term:%f \n", tid, i, weight_arr[i], first_term);
+		}
+
+		const float regularizer_dL_dsigma = 2 * dt * (sum_wSkj + sum_diff);
+		// if (tid == 0)
+		// 	printf("[tid = %d] regularizer_dL_dsigma:%f sum_wSkj:%f sum_diff:%f \n", tid, regularizer_dL_dsigma, sum_wSkj, sum_diff);
+
+		// end mip-NeRF 360 regularizer
+		*/
+
 		tcnn::vector_t<tcnn::network_precision_t, 4> local_dL_doutput;
 
 		// chain rule to go from dloss/drgb to dloss/dmlp_output
@@ -1489,6 +1541,7 @@ __global__ void compute_loss_kernel_train_nerf(
 
 		float dloss_by_dmlp = density_derivative * (
 			dt * (lg.gradient.matrix().dot((T * rgb - suffix).matrix()) + depth_supervision)
+			// + 0.01 * regularizer_dL_dsigma
 		);
 
 		//static constexpr float mask_supervision_strength = 1.f; // we are already 'leaking' mask information into the nerf via the random bg colors; setting this to eg between 1 and  100 encourages density towards 0 in such regions.
@@ -1498,7 +1551,6 @@ __global__ void compute_loss_kernel_train_nerf(
 			loss_scale * dloss_by_dmlp +
 			(float(local_network_output[3]) < 0.0f ? -output_l1_reg_density : 0.0f) +
 			(float(local_network_output[3]) > -10.0f && depth < near_distance ? 1e-4f : 0.0f);
-			;
 
 		*(tcnn::vector_t<tcnn::network_precision_t, 4>*)dloss_doutput = local_dL_doutput;
 
@@ -2502,6 +2554,9 @@ void Testbed::load_nerfslam() {
 
 		m_nerf.training.dataset = ngp::load_nerfslam(json_paths, m_nerf.sharpen);
 	}
+
+	// Can set with the gui
+	// m_nerf.training.depth_supervision_lambda = 1.0f;
 
 	m_nerf.rgb_activation = m_nerf.training.dataset.is_hdr ? ENerfActivation::Exponential : ENerfActivation::Logistic;
 
