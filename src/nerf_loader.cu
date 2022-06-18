@@ -956,8 +956,9 @@ NerfDataset load_nerfslam(const std::vector<filesystem::path>& jsonpaths, float 
 std::vector<TrainingXForm> NerfDataset::get_posterior_extrinsic() {
 	std::vector<TrainingXForm> ret;
 
+	// Not using ngp_matrix_to_nerf, it is for blender format
 	for(size_t i_img = 0; i_img < this->n_images; i_img++){
-		ret.push_back({this->ngp_matrix_to_nerf(this->xforms[i_img].start), this->ngp_matrix_to_nerf(this->xforms[i_img].end)});
+		ret.push_back({this->xforms[i_img].start, this->xforms[i_img].end});
 	}
 
 	return std::move(ret);
@@ -1121,10 +1122,11 @@ NerfDataset NerfDataset::add_training_image(nlohmann::json frame, uint8_t *img, 
 	this->metadata[i_img].principal_point = slam.principal_point;
 	this->metadata[i_img].camera_distortion = slam.camera_distortion;
 
-	// This is only use for blender format. Instant-ngp changes the blender format to ngp,
 	// See https://github.com/NVlabs/instant-ngp/discussions/153?converting=1
-	// this->xforms[i_img].start = this->nerf_matrix_to_ngp(this->xforms[i_img].start);
-	// this->xforms[i_img].end = this->nerf_matrix_to_ngp(this->xforms[i_img].end);
+	// nerf_matrix_to_ngp is only use for blender format. Instant-ngp changes the blender format to ngp,
+	// Therefore write one for myself to scale and add offset.
+	this->xforms[i_img].start = this->normal_matrix_to_ngp(this->xforms[i_img].start);
+	this->xforms[i_img].end = this->normal_matrix_to_ngp(this->xforms[i_img].end);
 
 	this->set_training_image(i_img, dst.res, dst.pixels, dst.depth_pixels, dst.depth_scale * this->scale, dst.image_data_on_gpu, dst.image_type, EDepthDataType::UShort, slam.sharpen_amount, dst.white_transparent, dst.black_transparent, dst.mask_color, dst.rays);
 

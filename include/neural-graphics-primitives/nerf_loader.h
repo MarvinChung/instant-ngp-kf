@@ -152,6 +152,12 @@ struct NerfDataset {
 		return result;
 	}
 
+	Eigen::Matrix<float, 3, 4> normal_matrix_to_ngp(const Eigen::Matrix<float, 3, 4>& normal_matrix) {
+		Eigen::Matrix<float, 3, 4> result = normal_matrix;
+		result.col(3) = result.col(3) * scale + offset;
+		return result;
+	}
+
 	Eigen::Matrix<float, 3, 4> ngp_matrix_to_nerf(const Eigen::Matrix<float, 3, 4>& ngp_matrix) {
 		Eigen::Matrix<float, 3, 4> result = ngp_matrix;
 		if (from_mitsuba) {
