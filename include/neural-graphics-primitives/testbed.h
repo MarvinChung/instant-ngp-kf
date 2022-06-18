@@ -567,7 +567,7 @@ public:
 			bool train_envmap = false;
 
 			bool optimize_distortion = false;
-			bool optimize_extrinsics = true; // false;
+			bool optimize_extrinsics = false; // true
 			bool optimize_extra_dims = false;
 			bool optimize_focal_length = false;
 			bool optimize_exposure = false;
@@ -583,7 +583,7 @@ public:
 			uint32_t n_steps_since_error_map_update = 0;
 			uint32_t n_rays_since_error_map_update = 0;
 
-			float near_distance = 0.2f;
+			float near_distance = 0.0f; // 0.2f;
 			float density_grid_decay = 0.95f;
 			int view = 0;
 
@@ -629,7 +629,7 @@ public:
 
 		float cone_angle_constant = 1.f/256.f;
 
-		bool visualize_cameras = false;
+		bool visualize_cameras = true; // false;
 		bool render_with_camera_distortion = false;
 		CameraDistortion render_distortion = {};
 
@@ -790,7 +790,7 @@ public:
 	float m_picture_in_picture_res = 0.f; // if non zero, requests a small second picture :)
 
 	bool m_imgui_enabled = true; // tab to toggle
-	bool m_visualize_unit_cube = false;
+	bool m_visualize_unit_cube = true; //false;
 	bool m_snap_to_pixel_centers = false;
 
 	Eigen::Vector2f m_parallax_shift = {0.f, 0.f}; // to shift the viewer's head position by some amount parallel to the screen

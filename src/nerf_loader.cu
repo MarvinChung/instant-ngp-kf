@@ -741,6 +741,7 @@ NerfDataset load_nerfslam(const std::vector<filesystem::path>& jsonpaths, float 
 	);
 
 	result.scale = NERF_SCALE;
+	// modify this
 	result.offset = {0.5f, 0.5f, 0.5f};
 
 	result.from_mitsuba = false;
@@ -1120,8 +1121,10 @@ NerfDataset NerfDataset::add_training_image(nlohmann::json frame, uint8_t *img, 
 	this->metadata[i_img].principal_point = slam.principal_point;
 	this->metadata[i_img].camera_distortion = slam.camera_distortion;
 
-	this->xforms[i_img].start = this->nerf_matrix_to_ngp(this->xforms[i_img].start);
-	this->xforms[i_img].end = this->nerf_matrix_to_ngp(this->xforms[i_img].end);
+	// This is only use for blender format. Instant-ngp changes the blender format to ngp,
+	// See https://github.com/NVlabs/instant-ngp/discussions/153?converting=1
+	// this->xforms[i_img].start = this->nerf_matrix_to_ngp(this->xforms[i_img].start);
+	// this->xforms[i_img].end = this->nerf_matrix_to_ngp(this->xforms[i_img].end);
 
 	this->set_training_image(i_img, dst.res, dst.pixels, dst.depth_pixels, dst.depth_scale * this->scale, dst.image_data_on_gpu, dst.image_type, EDepthDataType::UShort, slam.sharpen_amount, dst.white_transparent, dst.black_transparent, dst.mask_color, dst.rays);
 

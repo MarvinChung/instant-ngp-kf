@@ -1065,6 +1065,7 @@ __global__ void generate_training_samples_nerf(
 	const Vector2i cdf_res,
 	const float* __restrict__ extra_dims_gpu,
 	uint32_t n_extra_dims
+	// uint32_t img
 ) {
 	const uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
 	if (i >= n_rays) return;
@@ -2869,6 +2870,11 @@ float Testbed::Nerf::Training::Counters::update_after_training(uint32_t target_b
 	rays_per_batch = (uint32_t)((float)rays_per_batch * (float)target_batch_size / (float)measured_batch_size);
 	rays_per_batch = std::min(next_multiple(rays_per_batch, tcnn::batch_size_granularity), 1u << 18);
 
+	CUDA_CHECK_THROW(cudaDeviceSynchronize());
+
+ 	printf("[testbed_nerf] target_batch_size:%d rays_per_batch:%d \n", target_batch_size, rays_per_batch);
+ 	printf("[testbed_nerf] counter[0]:%d, compacted_counter[0]:%d \n", counter_cpu[0], compacted_counter_cpu[0]);
+
 	return loss_scalar;
 }
 
@@ -2942,11 +2948,16 @@ void Testbed::train_nerf(uint32_t target_batch_size, bool get_loss_scalar, cudaS
 		m_envmap.trainer->optimizer_step(stream, LOSS_SCALE);
 	}
 
+	std::cout << "==== step: " << m_training_step << " note that loss update every 16 times ====" << std::endl;
+
 	float loss_scalar = m_nerf.training.counters_rgb.update_after_training(target_batch_size, get_loss_scalar, stream);
 	bool zero_records = m_nerf.training.counters_rgb.measured_batch_size == 0;
 	if (get_loss_scalar) {
 		m_loss_scalar.update(loss_scalar);
 	}
+
+	std::cout << "[testbed_nerf] m_loss_scalar.val(): " << m_loss_scalar.val() << std::endl;
+	std::cout << "[testbed_nerf] m_loss_scalar.ema_val(): " <<m_loss_scalar.ema_val() << std::endl;
 
 	if (zero_records) {
 		m_loss_scalar.set(0.f);
@@ -3239,6 +3250,7 @@ void Testbed::train_nerf_step(uint32_t target_batch_size, uint32_t n_rays_per_ba
 		m_nerf.training.error_map.cdf_resolution,
 		m_nerf.training.extra_dims_gpu.data(),
 		m_nerf_network->n_extra_dims()
+		// m_training_step % m_nerf.training.n_images_for_training // This line force to train image one by one
 	);
 
 	auto hg_enc = dynamic_cast<GridEncoding<network_precision_t>*>(m_encoding.get());
@@ -3323,18 +3335,6 @@ void Testbed::train_nerf_step(uint32_t target_batch_size, uint32_t n_rays_per_ba
 		m_network->backward(stream, *ctx, compacted_coords_matrix, compacted_rgbsigma_matrix, gradient_matrix, prepare_input_gradients ? &coords_gradient_matrix : nullptr, false, EGradientMode::Overwrite);
 	}
 
-	// my debug
-
-	// std::vector<uint32_t> counter_cpu(1);
-	// std::vector<uint32_t> compacted_counter_cpu(1);
-
-	// m_nerf.training.counters_rgb.numsteps_counter.copy_to_host(counter_cpu);
-	// m_nerf.training.counters_rgb.numsteps_counter_compacted.copy_to_host(compacted_counter_cpu);
-
- 	// printf("max_samples:%d target_batch_size:%d n_rays_per_batch:%d \n", max_samples, target_batch_size, n_rays_per_batch);
- 	// printf("counter[0]:%d, compacted_counter[0]:%d \n", counter_cpu[0], compacted_counter_cpu[0]);
-
-    // end
 
 	if (train_extra_dims) {
 		// Compute extra-dim gradients
