@@ -152,8 +152,10 @@ struct NerfDataset {
 		return result;
 	}
 
-	Eigen::Matrix<float, 3, 4> normal_matrix_to_ngp(const Eigen::Matrix<float, 3, 4>& normal_matrix) {
-		Eigen::Matrix<float, 3, 4> result = normal_matrix;
+	Eigen::Matrix<float, 3, 4> slam_matrix_to_ngp(const Eigen::Matrix<float, 3, 4>& slam_matrix) {
+		Eigen::Matrix<float, 3, 4> result = slam_matrix;
+		result.col(0) *= -1;
+		result.col(1) *= -1;
 		result.col(3) = result.col(3) * scale + offset;
 		return result;
 	}

@@ -2534,6 +2534,7 @@ void Testbed::create_empty_nerf_dataset(size_t n_images, int aabb_scale, bool is
 }
 
 void Testbed::load_nerfslam() {
+	
 	CUDA_CHECK_THROW(cudaDeviceSynchronize());
 	if (!m_data_path.empty()) {
 		std::vector<fs::path> json_paths;

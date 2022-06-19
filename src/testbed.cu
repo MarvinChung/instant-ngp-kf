@@ -110,6 +110,7 @@ void Testbed::load_training_data(const std::string& data_path) {
 
 void Testbed::clear_training_data() {
 	m_training_data_available = false;
+	m_nerf.training.dataset.n_images = 0;
 	m_nerf.training.dataset.metadata.clear();
 }
 
@@ -1396,6 +1397,7 @@ void Testbed::draw_gui() {
 
 void Testbed::add_training_image(nlohmann::json frame, uint8_t *img, uint16_t *depth, uint8_t *alpha, uint8_t *mask) {
 	CUDA_CHECK_THROW(cudaDeviceSynchronize());
+	m_training_data_available = true;
 	
 	m_nerf.training.dataset.add_training_image(frame, img, depth, alpha, mask);
 	m_nerf.training.n_images_for_training = (int)m_nerf.training.dataset.n_images;

@@ -1078,7 +1078,7 @@ NerfDataset NerfDataset::add_training_image(nlohmann::json frame, uint8_t *img, 
 			frame["driver_parameters"].value("LightY", 0.f),
 			frame["driver_parameters"].value("LightZ", 0.f)
 		);
-		this->metadata[i_img].light_dir = this->nerf_direction_to_ngp(light_dir.normalized());
+		this->metadata[i_img].light_dir = light_dir.normalized(); // this->nerf_direction_to_ngp(light_dir.normalized());
 		this->has_light_dirs = true;
 		this->n_extra_learnable_dims = 0;
 	}
@@ -1125,8 +1125,10 @@ NerfDataset NerfDataset::add_training_image(nlohmann::json frame, uint8_t *img, 
 	// See https://github.com/NVlabs/instant-ngp/discussions/153?converting=1
 	// nerf_matrix_to_ngp is only use for blender format. Instant-ngp changes the blender format to ngp,
 	// Therefore write one for myself to scale and add offset.
-	this->xforms[i_img].start = this->normal_matrix_to_ngp(this->xforms[i_img].start);
-	this->xforms[i_img].end = this->normal_matrix_to_ngp(this->xforms[i_img].end);
+	this->xforms[i_img].start = this->slam_matrix_to_ngp(this->xforms[i_img].start);
+	this->xforms[i_img].end = this->slam_matrix_to_ngp(this->xforms[i_img].end);
+
+	
 
 	this->set_training_image(i_img, dst.res, dst.pixels, dst.depth_pixels, dst.depth_scale * this->scale, dst.image_data_on_gpu, dst.image_type, EDepthDataType::UShort, slam.sharpen_amount, dst.white_transparent, dst.black_transparent, dst.mask_color, dst.rays);
 
