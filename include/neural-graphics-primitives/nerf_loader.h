@@ -112,13 +112,14 @@ struct NerfDataset {
 		Eigen::Vector2f principal_point = Eigen::Vector2f::Constant(0.5f);
 		Eigen::Vector4f rolling_shutter = Eigen::Vector4f::Zero();
 		uint32_t max_training_keyframes;
+		std::vector<int> Id;
 	} slam;
 
 	uint32_t n_extra_dims() const {
 		return (has_light_dirs ? 3u : 0u) + n_extra_learnable_dims;
 	}
 
-	std::vector<TrainingXForm> get_posterior_extrinsic();
+	std::map<int, TrainingXForm> get_posterior_extrinsic();
 	NerfDataset add_training_image(nlohmann::json frame, uint8_t *img, uint16_t *depth, uint8_t *alpha, uint8_t *mask);
 	void set_training_image(int frame_idx, const Eigen::Vector2i& image_resolution, const void* pixels, const void* depth_pixels, float depth_scale, bool image_data_on_gpu, EImageDataType image_type, EDepthDataType depth_type, float sharpen_amount = 0.f, bool white_transparent = false, bool black_transparent = false, uint32_t mask_color = 0, const Ray *rays = nullptr);
 
@@ -174,6 +175,14 @@ struct NerfDataset {
 		}
 		result.col(1) *= -1;
 		result.col(2) *= -1;
+		result.col(3) = (result.col(3) - offset) / scale;
+		return result;
+	}
+
+	Eigen::Matrix<float, 3, 4> ngp_matrix_to_slam(const Eigen::Matrix<float, 3, 4>& ngp_matrix) {
+		Eigen::Matrix<float, 3, 4> result = ngp_matrix;
+		result.col(0) *= -1;
+		result.col(1) *= -1;
 		result.col(3) = (result.col(3) - offset) / scale;
 		return result;
 	}

@@ -1409,7 +1409,8 @@ void Testbed::add_training_image(nlohmann::json frame, uint8_t *img, uint16_t *d
 	CUDA_CHECK_THROW(cudaDeviceSynchronize());
 }
 
-std::vector<TrainingXForm> Testbed::get_posterior_extrinsic() {
+std::map<int, TrainingXForm> Testbed::get_posterior_extrinsic() {
+	CUDA_CHECK_THROW(cudaDeviceSynchronize());
 	return std::move(m_nerf.training.dataset.get_posterior_extrinsic());
 }
 

@@ -2873,8 +2873,8 @@ float Testbed::Nerf::Training::Counters::update_after_training(uint32_t target_b
 
 	CUDA_CHECK_THROW(cudaDeviceSynchronize());
 
- 	printf("[testbed_nerf] target_batch_size:%d rays_per_batch:%d \n", target_batch_size, rays_per_batch);
- 	printf("[testbed_nerf] counter[0]:%d, compacted_counter[0]:%d \n", counter_cpu[0], compacted_counter_cpu[0]);
+ 	// printf("[testbed_nerf] target_batch_size:%d rays_per_batch:%d \n", target_batch_size, rays_per_batch);
+ 	// printf("[testbed_nerf] counter[0]:%d, compacted_counter[0]:%d \n", counter_cpu[0], compacted_counter_cpu[0]);
 
 	return loss_scalar;
 }
@@ -2949,7 +2949,7 @@ void Testbed::train_nerf(uint32_t target_batch_size, bool get_loss_scalar, cudaS
 		m_envmap.trainer->optimizer_step(stream, LOSS_SCALE);
 	}
 
-	std::cout << "==== step: " << m_training_step << " note that loss update every 16 times ====" << std::endl;
+	// std::cout << "==== step: " << m_training_step << " note that loss update every 16 times ====" << std::endl;
 
 	float loss_scalar = m_nerf.training.counters_rgb.update_after_training(target_batch_size, get_loss_scalar, stream);
 	bool zero_records = m_nerf.training.counters_rgb.measured_batch_size == 0;
@@ -2957,8 +2957,8 @@ void Testbed::train_nerf(uint32_t target_batch_size, bool get_loss_scalar, cudaS
 		m_loss_scalar.update(loss_scalar);
 	}
 
-	std::cout << "[testbed_nerf] m_loss_scalar.val(): " << m_loss_scalar.val() << std::endl;
-	std::cout << "[testbed_nerf] m_loss_scalar.ema_val(): " <<m_loss_scalar.ema_val() << std::endl;
+	// std::cout << "[testbed_nerf] m_loss_scalar.val(): " << m_loss_scalar.val() << std::endl;
+	// std::cout << "[testbed_nerf] m_loss_scalar.ema_val(): " <<m_loss_scalar.ema_val() << std::endl;
 
 	if (zero_records) {
 		m_loss_scalar.set(0.f);

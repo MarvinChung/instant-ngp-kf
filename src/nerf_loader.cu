@@ -928,7 +928,7 @@ NerfDataset load_nerfslam(const std::vector<filesystem::path>& jsonpaths, float 
 			result.slam.max_training_keyframes = int(json["max_training_keyframes"]);
 		}
 		else{
-			result.slam.max_training_keyframes =  result.aabb_scale * 256;
+			result.slam.max_training_keyframes =  2048; // result.aabb_scale * 256;
 		}
 	}
 
@@ -953,18 +953,22 @@ NerfDataset load_nerfslam(const std::vector<filesystem::path>& jsonpaths, float 
 	return result;
 }
 
-std::vector<TrainingXForm> NerfDataset::get_posterior_extrinsic() {
-	std::vector<TrainingXForm> ret;
+std::map<int, TrainingXForm> NerfDataset::get_posterior_extrinsic() {
+	std::map<int, TrainingXForm> ret;
 
 	// Not using ngp_matrix_to_nerf, it is for blender format
 	for(size_t i_img = 0; i_img < this->n_images; i_img++){
-		ret.push_back({this->xforms[i_img].start, this->xforms[i_img].end});
+		ret[this->slam.Id[i_img]] = {ngp_matrix_to_slam(this->xforms[i_img].start), ngp_matrix_to_slam(this->xforms[i_img].end)};
 	}
 
 	return std::move(ret);
 }
 
 NerfDataset NerfDataset::add_training_image(nlohmann::json frame, uint8_t *img, uint16_t *depth, uint8_t *alpha, uint8_t *mask) {
+
+	if (!frame.contains("Id") ) {
+		throw std::runtime_error{"No image Id is provided"};
+	}
 
 	if (!frame.contains("h") || !frame.contains("w") ) {
 		throw std::runtime_error{"No height or width information provided"};
@@ -998,6 +1002,7 @@ NerfDataset NerfDataset::add_training_image(nlohmann::json frame, uint8_t *img, 
 	this->pixelmemory.resize(this->slam.max_training_keyframes);
 	this->depthmemory.resize(this->slam.max_training_keyframes);
 	this->raymemory.resize(this->slam.max_training_keyframes);
+	this->slam.Id.resize(this->slam.max_training_keyframes);
 
 	if (this->n_images >= this->slam.max_training_keyframes) {
 		tlog::warning() << this->n_images << "(Number of keyframes) > " << this->slam.max_training_keyframes
@@ -1128,8 +1133,7 @@ NerfDataset NerfDataset::add_training_image(nlohmann::json frame, uint8_t *img, 
 	this->xforms[i_img].start = this->slam_matrix_to_ngp(this->xforms[i_img].start);
 	this->xforms[i_img].end = this->slam_matrix_to_ngp(this->xforms[i_img].end);
 
-	
-
+	this->slam.Id[i_img] = frame["Id"];
 	this->set_training_image(i_img, dst.res, dst.pixels, dst.depth_pixels, dst.depth_scale * this->scale, dst.image_data_on_gpu, dst.image_type, EDepthDataType::UShort, slam.sharpen_amount, dst.white_transparent, dst.black_transparent, dst.mask_color, dst.rays);
 
 	if (dst.image_data_on_gpu) {
