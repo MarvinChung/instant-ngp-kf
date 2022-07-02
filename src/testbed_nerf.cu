@@ -1602,7 +1602,7 @@ __global__ void compute_loss_kernel_train_nerf(
 }
 
 
-__global__ void compute_cam_gradient_train_nerf(
+__global__ void compute_cam_gradient_train_nerf_first_order_optimizer(
 	const uint32_t n_rays,
 	const uint32_t n_rays_total,
 	default_rng_t rng,
@@ -1672,7 +1672,7 @@ __global__ void compute_cam_gradient_train_nerf(
 
 	// Projection of the raydir gradient onto the plane normal to raydir,
 	// because that's the only degree of motion that the raydir has.
-	ray_gradient.d -= ray.d * ray_gradient.d.dot(ray.d);
+	// ray_gradient.d -= ray.d * ray_gradient.d.dot(ray.d);
 
 	rng.advance(ray_idx * N_MAX_RANDOM_SAMPLES_PER_RAY());
 	float xy_pdf = 1.0f;
@@ -1702,12 +1702,139 @@ __global__ void compute_cam_gradient_train_nerf(
 		// Due to our construction of ray_gradient.d, ray_gradient.d and ray.d are
 		// orthogonal, leading to the angle_axis magnitude to equal the magnitude
 		// of ray_gradient.d.
-		Vector3f angle_axis = ray.d.cross(ray_gradient.d);
+		Vector3f angle_axis = -ray.d.cross(ray_gradient.d);
 
 		// Atomically reduce the ray gradient into the xform gradient
 		#pragma unroll
 		for (uint32_t j = 0; j < 3; ++j) {
 			atomicAdd(&cam_rot_gradient[img][j], angle_axis[j] / xy_pdf);
+		}
+	}
+}
+
+__global__ void compute_cam_gradient_train_nerf_gauss_newton_optimizer(
+	const uint32_t n_rays,
+	const uint32_t n_rays_total,
+	default_rng_t rng,
+	const BoundingBox aabb,
+	const uint32_t* __restrict__ rays_counter,
+	const TrainingXForm* training_xforms,
+	bool snap_to_pixel_centers,
+	Vector3f* cam_pos_gradient,
+	Vector3f* cam_rot_gradient,
+	Matrix3f* cam_pos_hessian,
+	Matrix3f* cam_rot_hessian,
+	const float* loss,
+	const uint32_t n_training_images,
+	const TrainingImageMetadata* __restrict__ metadata,
+	const uint32_t* __restrict__ ray_indices_in,
+	const Ray* __restrict__ rays_in_unnormalized,
+	uint32_t* __restrict__ numsteps_in,
+	PitchedPtr<NerfCoordinate> coords,
+	PitchedPtr<NerfCoordinate> coords_gradient,
+	float* __restrict__ distortion_gradient,
+	float* __restrict__ distortion_gradient_weight,
+	const Vector2i distortion_resolution,
+	Vector2f* cam_focal_length_gradient,
+	const float* __restrict__ cdf_x_cond_y,
+	const float* __restrict__ cdf_y,
+	const float* __restrict__ cdf_img,
+	const Vector2i error_map_res
+) {
+	const uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
+	if (i >= *rays_counter) { return; }
+
+	// grab the number of samples for this ray, and the first sample
+	uint32_t numsteps = numsteps_in[i*2+0];
+	if (numsteps == 0) {
+		// The ray doesn't matter. So no gradient onto the camera
+		return;
+	}
+
+	uint32_t base = numsteps_in[i*2+1];
+	coords += base;
+	coords_gradient += base;
+
+	// Must be same seed as above to obtain the same
+	// background color.
+	uint32_t ray_idx = ray_indices_in[i];
+	uint32_t img = image_idx(ray_idx, n_rays, n_rays_total, n_training_images, cdf_img);
+	Eigen::Vector2i resolution = metadata[img].resolution;
+
+	const Matrix<float, 3, 4>& xform = training_xforms[img].start;
+
+	Ray ray = rays_in_unnormalized[i];
+	ray.d = ray.d.normalized();
+	Ray ray_gradient = { Vector3f::Zero(), Vector3f::Zero() };
+
+	// Compute ray gradient
+	for (uint32_t j = 0; j < numsteps; ++j) {
+		// pos = ray.o + t * ray.d;
+
+		const Vector3f warped_pos = coords(j)->pos.p;
+		const Vector3f pos_gradient = coords_gradient(j)->pos.p.cwiseProduct(warp_position_derivative(warped_pos, aabb));
+		ray_gradient.o += pos_gradient;
+		const Vector3f pos = unwarp_position(warped_pos, aabb);
+
+		// Scaled by t to account for the fact that further-away objects' position
+		// changes more rapidly as the direction changes.
+		float t = (pos - ray.o).norm();
+		const Vector3f dir_gradient = coords_gradient(j)->dir.d.cwiseProduct(warp_direction_derivative(coords(j)->dir.d));
+		ray_gradient.d += pos_gradient * t + dir_gradient;
+	}
+
+	// Projection of the raydir gradient onto the plane normal to raydir,
+	// because that's the only degree of motion that the raydir has.
+	// ray_gradient.d -= ray.d * ray_gradient.d.dot(ray.d);
+
+	rng.advance(ray_idx * N_MAX_RANDOM_SAMPLES_PER_RAY());
+	float xy_pdf = 1.0f;
+
+	Vector2f xy = nerf_random_image_pos_training(rng, resolution, snap_to_pixel_centers, cdf_x_cond_y, cdf_y, error_map_res, img, &xy_pdf);
+
+	if (distortion_gradient) {
+		// Rotate ray gradient to obtain image plane gradient.
+		// This has the effect of projecting the (already projected) ray gradient from the
+		// tangent plane of the sphere onto the image plane (which is correct!).
+		Vector3f image_plane_gradient = xform.block<3,3>(0,0).inverse() * ray_gradient.d;
+
+		// Splat the resulting 2D image plane gradient into the distortion params
+		deposit_image_gradient<2>(image_plane_gradient.head<2>() / xy_pdf, distortion_gradient, distortion_gradient_weight, distortion_resolution, xy);
+	}
+
+	if (cam_pos_gradient) {
+		// Atomically reduce the ray gradient into the xform gradient
+		Vector3f Jacobian = -ray_gradient.o / xy_pdf;
+		Matrix3f Hessian  = Jacobian * Jacobian.transpose();
+		
+		#pragma unroll
+		for (uint32_t j = 0; j < 3; ++j) {
+			atomicAdd(&cam_pos_gradient[img][j], Jacobian[j] * loss[i]);
+		}
+
+		#pragma unroll
+		for (uint32_t j = 0; j < 9; ++j) {
+			atomicAdd(&cam_pos_hessian[img].data()[j], Hessian.data()[j]);
+		}
+	}
+
+	if (cam_rot_gradient) {
+		// Rotation is averaged in log-space (i.e. by averaging angle-axes).
+		// Due to our construction of ray_gradient.d, ray_gradient.d and ray.d are
+		// orthogonal, leading to the angle_axis magnitude to equal the magnitude
+		// of ray_gradient.d.
+		Vector3f Jacobian = ray.d.cross(ray_gradient.d) / xy_pdf;
+		Matrix3f Hessian  = Jacobian * Jacobian.transpose();
+
+		// Atomically reduce the ray gradient into the xform gradient
+		#pragma unroll
+		for (uint32_t j = 0; j < 3; ++j) {
+			atomicAdd(&cam_rot_gradient[img][j], Jacobian[j] * loss[i]);
+		}
+
+		#pragma unroll
+		for (uint32_t j = 0; j < 9; ++j) {
+			atomicAdd(&cam_rot_hessian[img].data()[j], Hessian.data()[j]);
 		}
 	}
 }
@@ -2567,6 +2694,9 @@ void Testbed::load_nerfslam() {
 	m_nerf.training.cam_pos_gradient.resize(m_nerf.training.dataset.slam.max_training_keyframes, Vector3f::Zero());
 	m_nerf.training.cam_pos_gradient_gpu.resize_and_copy_from_host(m_nerf.training.cam_pos_gradient);
 
+	m_nerf.training.cam_pos_hessian.resize(m_nerf.training.dataset.slam.max_training_keyframes, Matrix3f::Zero());
+	m_nerf.training.cam_pos_hessian_gpu.resize_and_copy_from_host(m_nerf.training.cam_pos_hessian);
+
 	m_nerf.training.cam_exposure.resize(m_nerf.training.dataset.slam.max_training_keyframes, AdamOptimizer<Array3f>(1e-3f));
 	m_nerf.training.cam_pos_offset.resize(m_nerf.training.dataset.slam.max_training_keyframes, AdamOptimizer<Vector3f>(1e-4f));
 	m_nerf.training.cam_rot_offset.resize(m_nerf.training.dataset.slam.max_training_keyframes, RotationAdamOptimizer(1e-4f));
@@ -2574,6 +2704,9 @@ void Testbed::load_nerfslam() {
 
 	m_nerf.training.cam_rot_gradient.resize(m_nerf.training.dataset.slam.max_training_keyframes, Vector3f::Zero());
 	m_nerf.training.cam_rot_gradient_gpu.resize_and_copy_from_host(m_nerf.training.cam_rot_gradient);
+
+	m_nerf.training.cam_rot_hessian.resize(m_nerf.training.dataset.slam.max_training_keyframes, Matrix3f::Zero());
+	m_nerf.training.cam_rot_hessian_gpu.resize_and_copy_from_host(m_nerf.training.cam_rot_hessian);
 
 	m_nerf.training.cam_exposure_gradient.resize(m_nerf.training.dataset.slam.max_training_keyframes, Array3f::Zero());
 	m_nerf.training.cam_exposure_gpu.resize_and_copy_from_host(m_nerf.training.cam_exposure_gradient);
@@ -2656,6 +2789,9 @@ void Testbed::load_nerf() {
 	m_nerf.training.cam_pos_gradient.resize(m_nerf.training.dataset.n_images, Vector3f::Zero());
 	m_nerf.training.cam_pos_gradient_gpu.resize_and_copy_from_host(m_nerf.training.cam_pos_gradient);
 
+	m_nerf.training.cam_pos_hessian.resize(m_nerf.training.dataset.n_images, Matrix3f::Zero());
+	m_nerf.training.cam_pos_hessian_gpu.resize_and_copy_from_host(m_nerf.training.cam_pos_hessian);
+
 	m_nerf.training.cam_exposure.resize(m_nerf.training.dataset.n_images, AdamOptimizer<Array3f>(1e-3f));
 	m_nerf.training.cam_pos_offset.resize(m_nerf.training.dataset.n_images, AdamOptimizer<Vector3f>(1e-4f));
 	m_nerf.training.cam_rot_offset.resize(m_nerf.training.dataset.n_images, RotationAdamOptimizer(1e-4f));
@@ -2663,6 +2799,9 @@ void Testbed::load_nerf() {
 
 	m_nerf.training.cam_rot_gradient.resize(m_nerf.training.dataset.n_images, Vector3f::Zero());
 	m_nerf.training.cam_rot_gradient_gpu.resize_and_copy_from_host(m_nerf.training.cam_rot_gradient);
+
+	m_nerf.training.cam_rot_hessian.resize(m_nerf.training.dataset.n_images, Matrix3f::Zero());
+	m_nerf.training.cam_rot_hessian_gpu.resize_and_copy_from_host(m_nerf.training.cam_rot_hessian);
 
 	m_nerf.training.cam_exposure_gradient.resize(m_nerf.training.dataset.n_images, Array3f::Zero());
 	m_nerf.training.cam_exposure_gpu.resize_and_copy_from_host(m_nerf.training.cam_exposure_gradient);
@@ -2902,6 +3041,8 @@ void Testbed::train_nerf(uint32_t target_batch_size, bool get_loss_scalar, cudaS
 	if (m_nerf.training.n_steps_since_cam_update == 0) {
 		CUDA_CHECK_THROW(cudaMemsetAsync(m_nerf.training.cam_pos_gradient_gpu.data(), 0, m_nerf.training.cam_pos_gradient_gpu.get_bytes(), stream));
 		CUDA_CHECK_THROW(cudaMemsetAsync(m_nerf.training.cam_rot_gradient_gpu.data(), 0, m_nerf.training.cam_rot_gradient_gpu.get_bytes(), stream));
+		CUDA_CHECK_THROW(cudaMemsetAsync(m_nerf.training.cam_pos_hessian_gpu.data(), 0, m_nerf.training.cam_pos_hessian_gpu.get_bytes(), stream));
+		CUDA_CHECK_THROW(cudaMemsetAsync(m_nerf.training.cam_rot_hessian_gpu.data(), 0, m_nerf.training.cam_pos_hessian_gpu.get_bytes(), stream));
 		CUDA_CHECK_THROW(cudaMemsetAsync(m_nerf.training.cam_exposure_gradient_gpu.data(), 0, m_nerf.training.cam_exposure_gradient_gpu.get_bytes(), stream));
 		CUDA_CHECK_THROW(cudaMemsetAsync(m_distortion.map->gradients(), 0, sizeof(float)*m_distortion.map->n_params(), stream));
 		CUDA_CHECK_THROW(cudaMemsetAsync(m_distortion.map->gradient_weights(), 0, sizeof(float)*m_distortion.map->n_params(), stream));
@@ -3062,29 +3203,67 @@ void Testbed::train_nerf(uint32_t target_batch_size, bool get_loss_scalar, cudaS
 	if (train_camera && m_nerf.training.n_steps_since_cam_update >= m_nerf.training.n_steps_between_cam_updates) {
 		float per_camera_loss_scale = (float)m_nerf.training.n_images_for_training / LOSS_SCALE / (float)m_nerf.training.n_steps_between_cam_updates;
 
-		if (m_nerf.training.optimize_extrinsics) {
+		if (m_nerf.training.optimize_extrinsics ) {
+
 			CUDA_CHECK_THROW(cudaMemcpyAsync(m_nerf.training.cam_pos_gradient.data(), m_nerf.training.cam_pos_gradient_gpu.data(), m_nerf.training.cam_pos_gradient_gpu.get_bytes(), cudaMemcpyDeviceToHost, stream));
 			CUDA_CHECK_THROW(cudaMemcpyAsync(m_nerf.training.cam_rot_gradient.data(), m_nerf.training.cam_rot_gradient_gpu.data(), m_nerf.training.cam_rot_gradient_gpu.get_bytes(), cudaMemcpyDeviceToHost, stream));
-
+			CUDA_CHECK_THROW(cudaMemcpyAsync(m_nerf.training.cam_pos_hessian.data(), m_nerf.training.cam_pos_hessian_gpu.data(), m_nerf.training.cam_pos_hessian_gpu.get_bytes(), cudaMemcpyDeviceToHost, stream));
+			CUDA_CHECK_THROW(cudaMemcpyAsync(m_nerf.training.cam_rot_hessian.data(), m_nerf.training.cam_rot_hessian_gpu.data(), m_nerf.training.cam_rot_hessian_gpu.get_bytes(), cudaMemcpyDeviceToHost, stream));
 			CUDA_CHECK_THROW(cudaStreamSynchronize(stream));
 
-			// Optimization step
-			for (uint32_t i = 0; i < m_nerf.training.n_images_for_training; ++i) {
-				Vector3f pos_gradient = m_nerf.training.cam_pos_gradient[i] * per_camera_loss_scale;
-				Vector3f rot_gradient = m_nerf.training.cam_rot_gradient[i] * per_camera_loss_scale;
+			// first order
+			if (m_nerf.training.extrinsic_optimizer_mode == EExtrinsicOptimizer::Adam) {
 
-				float l2_reg = m_nerf.training.extrinsic_l2_reg;
-				pos_gradient += m_nerf.training.cam_pos_offset[i].variable() * l2_reg;
-				rot_gradient += m_nerf.training.cam_rot_offset[i].variable() * l2_reg;
+				// Optimization step
+				for (uint32_t i = 0; i < m_nerf.training.n_images_for_training; ++i) {
+					Vector3f pos_gradient = m_nerf.training.cam_pos_gradient[i] * per_camera_loss_scale;
+					Vector3f rot_gradient = m_nerf.training.cam_rot_gradient[i] * per_camera_loss_scale;
 
-				m_nerf.training.cam_pos_offset[i].set_learning_rate(std::max(1e-3f * std::pow(0.33f, (float)(m_nerf.training.cam_pos_offset[i].step() / 128)), m_optimizer->learning_rate()/1000.0f));
-				m_nerf.training.cam_rot_offset[i].set_learning_rate(std::max(1e-3f * std::pow(0.33f, (float)(m_nerf.training.cam_rot_offset[i].step() / 128)), m_optimizer->learning_rate()/1000.0f));
+					float l2_reg = m_nerf.training.extrinsic_l2_reg;
+					pos_gradient += m_nerf.training.cam_pos_offset[i].variable() * l2_reg;
+					rot_gradient += m_nerf.training.cam_rot_offset[i].variable() * l2_reg;
 
-				m_nerf.training.cam_pos_offset[i].step(pos_gradient);
-				m_nerf.training.cam_rot_offset[i].step(rot_gradient);
+					m_nerf.training.cam_pos_offset[i].set_learning_rate(std::max(1e-3f * std::pow(0.33f, (float)(m_nerf.training.cam_pos_offset[i].step() / 128)), m_optimizer->learning_rate()/1000.0f));
+					m_nerf.training.cam_rot_offset[i].set_learning_rate(std::max(1e-3f * std::pow(0.33f, (float)(m_nerf.training.cam_rot_offset[i].step() / 128)), m_optimizer->learning_rate()/1000.0f));
+
+					m_nerf.training.cam_pos_offset[i].step(pos_gradient);
+					m_nerf.training.cam_rot_offset[i].step(rot_gradient);
+				}
+
+			}
+			// second order
+			else if (m_nerf.training.extrinsic_optimizer_mode == EExtrinsicOptimizer::GaussNewton) {
+				// Optimization step
+				for (uint32_t i = 0; i < m_nerf.training.n_images_for_training; ++i) {
+					// cam_pos_gradient and cam_rot_gradient stores sum Jacobian*residual instead of sum Jacobian. 
+					Vector3f pos_b = m_nerf.training.cam_pos_gradient[i];
+					Vector3f rot_b = m_nerf.training.cam_rot_gradient[i];
+
+					Matrix3f pos_H = m_nerf.training.cam_pos_hessian[i];
+					Matrix3f rot_H = m_nerf.training.cam_pos_hessian[i];
+
+					Vector3f dt = pos_H.ldlt().solve(pos_b);
+					Vector3f dr = rot_H.ldlt().solve(rot_b);
+
+					// if (isnan(dt)) {
+					// 	throw std::runtime_error{"dt is nan!"};
+					// }
+
+					// if (isnan(dr)) {
+					// 	throw std::runtime_error{"dr is nan!"};
+					// }
+
+					m_nerf.training.cam_pos_offset[i].translate(dt);
+					m_nerf.training.cam_rot_offset[i].rotate(dr);
+				}
+
+			}
+			else{
+				throw std::runtime_error{" extrinsic_optimizer_mode is not valid"};
 			}
 
 			m_nerf.training.update_transforms();
+
 		}
 
 		if (m_nerf.training.optimize_distortion) {
@@ -3354,33 +3533,74 @@ void Testbed::train_nerf_step(uint32_t target_batch_size, uint32_t n_rays_per_ba
 	}
 
 	if (train_camera) {
-		// Compute camera gradients
-		linear_kernel(compute_cam_gradient_train_nerf, 0, stream,
-			n_rays_per_batch,
-			n_rays_total,
-			m_rng,
-			m_aabb,
-			ray_counter,
-			m_nerf.training.transforms_gpu.data(),
-			m_nerf.training.snap_to_pixel_centers,
-			m_nerf.training.optimize_extrinsics ? m_nerf.training.cam_pos_gradient_gpu.data() : nullptr,
-			m_nerf.training.optimize_extrinsics ? m_nerf.training.cam_rot_gradient_gpu.data() : nullptr,
-			m_nerf.training.n_images_for_training,
-			m_nerf.training.metadata_gpu.data(),
-			ray_indices,
-			rays_unnormalized,
-			numsteps,
-			PitchedPtr<NerfCoordinate>((NerfCoordinate*)coords_compacted, 1, 0, extra_stride),
-			PitchedPtr<NerfCoordinate>((NerfCoordinate*)coords_gradient, 1, 0, extra_stride),
-			m_nerf.training.optimize_distortion ? m_distortion.map->gradients() : nullptr,
-			m_nerf.training.optimize_distortion ? m_distortion.map->gradient_weights() : nullptr,
-			m_distortion.resolution,
-			m_nerf.training.optimize_focal_length ? m_nerf.training.cam_focal_length_gradient_gpu.data() : nullptr,
-			sample_focal_plane_proportional_to_error ? m_nerf.training.error_map.cdf_x_cond_y.data() : nullptr,
-			sample_focal_plane_proportional_to_error ? m_nerf.training.error_map.cdf_y.data() : nullptr,
-			sample_image_proportional_to_error ? m_nerf.training.error_map.cdf_img.data() : nullptr,
-			m_nerf.training.error_map.cdf_resolution
-		);
+
+		// For first order optimizer
+		if (m_nerf.training.extrinsic_optimizer_mode == EExtrinsicOptimizer::Adam)
+		{
+			// Compute camera gradients
+			linear_kernel(compute_cam_gradient_train_nerf_first_order_optimizer, 0, stream,
+				n_rays_per_batch,
+				n_rays_total,
+				m_rng,
+				m_aabb,
+				ray_counter,
+				m_nerf.training.transforms_gpu.data(),
+				m_nerf.training.snap_to_pixel_centers,
+				m_nerf.training.optimize_extrinsics ? m_nerf.training.cam_pos_gradient_gpu.data() : nullptr,
+				m_nerf.training.optimize_extrinsics ? m_nerf.training.cam_rot_gradient_gpu.data() : nullptr,
+				m_nerf.training.n_images_for_training,
+				m_nerf.training.metadata_gpu.data(),
+				ray_indices,
+				rays_unnormalized,
+				numsteps,
+				PitchedPtr<NerfCoordinate>((NerfCoordinate*)coords_compacted, 1, 0, extra_stride),
+				PitchedPtr<NerfCoordinate>((NerfCoordinate*)coords_gradient, 1, 0, extra_stride),
+				m_nerf.training.optimize_distortion ? m_distortion.map->gradients() : nullptr,
+				m_nerf.training.optimize_distortion ? m_distortion.map->gradient_weights() : nullptr,
+				m_distortion.resolution,
+				m_nerf.training.optimize_focal_length ? m_nerf.training.cam_focal_length_gradient_gpu.data() : nullptr,
+				sample_focal_plane_proportional_to_error ? m_nerf.training.error_map.cdf_x_cond_y.data() : nullptr,
+				sample_focal_plane_proportional_to_error ? m_nerf.training.error_map.cdf_y.data() : nullptr,
+				sample_image_proportional_to_error ? m_nerf.training.error_map.cdf_img.data() : nullptr,
+				m_nerf.training.error_map.cdf_resolution
+			);
+		}
+		// For second order optimizer
+		else if(m_nerf.training.extrinsic_optimizer_mode == EExtrinsicOptimizer::GaussNewton)
+		{
+			// Compute hessian in the cuda kernel and store J*r in gradient
+			// Then store the delta step in m_nerf.training.cam_pos_gradient_gpu.data() and m_nerf.training.cam_rot_gradient_gpu.data() 
+			linear_kernel(compute_cam_gradient_train_nerf_gauss_newton_optimizer, 0, stream,
+				n_rays_per_batch,
+				n_rays_total,
+				m_rng,
+				m_aabb,
+				ray_counter,
+				m_nerf.training.transforms_gpu.data(),
+				m_nerf.training.snap_to_pixel_centers,
+				m_nerf.training.optimize_extrinsics ? m_nerf.training.cam_pos_gradient_gpu.data() : nullptr,
+				m_nerf.training.optimize_extrinsics ? m_nerf.training.cam_rot_gradient_gpu.data() : nullptr,
+				m_nerf.training.optimize_extrinsics ? m_nerf.training.cam_pos_hessian_gpu.data() : nullptr,
+				m_nerf.training.optimize_extrinsics ? m_nerf.training.cam_rot_hessian_gpu.data() : nullptr,
+				loss,
+				m_nerf.training.n_images_for_training,
+				m_nerf.training.metadata_gpu.data(),
+				ray_indices,
+				rays_unnormalized,
+				numsteps,
+				PitchedPtr<NerfCoordinate>((NerfCoordinate*)coords_compacted, 1, 0, extra_stride),
+				PitchedPtr<NerfCoordinate>((NerfCoordinate*)coords_gradient, 1, 0, extra_stride),
+				m_nerf.training.optimize_distortion ? m_distortion.map->gradients() : nullptr,
+				m_nerf.training.optimize_distortion ? m_distortion.map->gradient_weights() : nullptr,
+				m_distortion.resolution,
+				m_nerf.training.optimize_focal_length ? m_nerf.training.cam_focal_length_gradient_gpu.data() : nullptr,
+				sample_focal_plane_proportional_to_error ? m_nerf.training.error_map.cdf_x_cond_y.data() : nullptr,
+				sample_focal_plane_proportional_to_error ? m_nerf.training.error_map.cdf_y.data() : nullptr,
+				sample_image_proportional_to_error ? m_nerf.training.error_map.cdf_img.data() : nullptr,
+				m_nerf.training.error_map.cdf_resolution
+			);
+		}
+		
 	}
 
 	m_rng.advance();

@@ -519,8 +519,16 @@ public:
 			std::vector<Eigen::Vector3f> cam_pos_gradient;
 			tcnn::GPUMemory<Eigen::Vector3f> cam_pos_gradient_gpu;
 
+			// for second order
+			std::vector<Eigen::Matrix3f> cam_pos_hessian;
+			tcnn::GPUMemory<Eigen::Matrix3f> cam_pos_hessian_gpu;
+
 			std::vector<Eigen::Vector3f> cam_rot_gradient;
 			tcnn::GPUMemory<Eigen::Vector3f> cam_rot_gradient_gpu;
+
+			// for second order
+			std::vector<Eigen::Matrix3f> cam_rot_hessian;
+			tcnn::GPUMemory<Eigen::Matrix3f> cam_rot_hessian_gpu;
 
 			tcnn::GPUMemory<Eigen::Array3f> cam_exposure_gpu;
 			std::vector<Eigen::Array3f> cam_exposure_gradient;
@@ -568,6 +576,7 @@ public:
 
 			bool optimize_distortion = false;
 			bool optimize_extrinsics = true; //false; 
+			EExtrinsicOptimizer extrinsic_optimizer_mode = EExtrinsicOptimizer::Adam;
 			bool optimize_extra_dims = false;
 			bool optimize_focal_length = false;
 			bool optimize_exposure = false;

@@ -151,6 +151,11 @@ enum class ETestbedMode : int {
 	NerfSlam,
 };
 
+enum class EExtrinsicOptimizer : int {
+	Adam,
+	GaussNewton,
+};
+
 enum class ESDFGroundTruthMode : int {
 	RaytracedMesh,
 	SpheretracedMesh,
