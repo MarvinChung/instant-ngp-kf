@@ -236,6 +236,18 @@ bool DebugProject(const Matrix<float, 4, 4>&proj, Vector3f p, ImVec2& o) {
 	return true;
 }
 
+void add_debug_circle(ImDrawList* list, const Matrix<float, 4, 4>& proj, Eigen::Vector3f a, float radius, uint32_t col, float thickness) {
+	ImVec2 aa;
+	if(DebugProject(proj, a, aa))
+	{
+		list->AddCircleFilled(aa, radius, col, thickness);
+	}
+}
+
+void visualize_prior_map_point(ImDrawList* list, const Matrix<float, 4, 4>& world2proj, const Eigen::Vector3f map_point) {
+	add_debug_circle(list, world2proj, map_point, 0.1, 0xff4040ff);
+}
+
 void add_debug_line(ImDrawList* list, const Matrix<float, 4, 4>& proj, Vector3f a, Vector3f b, uint32_t col, float thickness) {
 	ImVec2 aa, bb;
 	if (DebugProject(proj, a, aa) && DebugProject(proj, b, bb)) {

@@ -471,6 +471,7 @@ void Testbed::imgui() {
 			ImGui::Combo("Loss", (int*)&m_nerf.training.loss_type, LossTypeStr);
 			ImGui::Combo("RGB activation", (int*)&m_nerf.rgb_activation, NerfActivationStr);
 			ImGui::Combo("Density activation", (int*)&m_nerf.density_activation, NerfActivationStr);
+			ImGui::Combo("Extrinsic Optimizer", (int*)&m_nerf.training.extrinsic_optimizer_mode, ExtrinsicOptimizerStr);
 			ImGui::SliderFloat("Cone angle", &m_nerf.cone_angle_constant, 0.0f, 1.0f/128.0f);
 			ImGui::SliderFloat("Depth supervision strength", &m_nerf.training.depth_supervision_lambda, 0.f, 1.f);
 
@@ -691,8 +692,16 @@ void Testbed::imgui() {
 			if (m_testbed_mode == ETestbedMode::Nerf || m_testbed_mode == ETestbedMode::NerfSlam) {
 				ImGui::SameLine();
 				ImGui::Checkbox("Visualize cameras", &m_nerf.visualize_cameras);
+
+				if (m_testbed_mode == ETestbedMode::NerfSlam) {
+					ImGui::SameLine();
+					ImGui::Checkbox("Visualize prior map points", &m_nerf.visualize_prior_map_points);
+				}
+
 				accum_reset |= ImGui::SliderInt("Show acceleration", &m_nerf.show_accel, -1, 7);
 			}
+
+			
 
 			if (!m_single_view) { ImGui::BeginDisabled(); }
 			if (ImGui::SliderInt("Visualized dimension", &m_visualized_dimension, -1, (int)network_width(m_visualized_layer)-1)) {
@@ -1002,6 +1011,12 @@ void Testbed::imgui() {
 	ImGui::End();
 }
 
+void Testbed::visualize_prior_map_points(ImDrawList* list, const Matrix<float, 4, 4>& world2proj, std::vector<Eigen::Vector3f> map_points) {
+	for (int i = 0; i < map_points.size(); ++i) {
+		visualize_prior_map_point(list, world2proj, map_points[i]);
+	}
+}
+
 void Testbed::visualize_nerf_cameras(ImDrawList* list, const Matrix<float, 4, 4>& world2proj) {
 	for (int i = 0; i < m_nerf.training.n_images_for_training; ++i) {
 		auto res = m_nerf.training.dataset.metadata[i].resolution;
@@ -1042,6 +1057,12 @@ void Testbed::draw_visualizations(ImDrawList* list, const Matrix<float, 3, 4>& c
 		if (m_testbed_mode == ETestbedMode::Nerf || m_testbed_mode == ETestbedMode::NerfSlam) {
 			if (m_nerf.visualize_cameras) {
 				visualize_nerf_cameras(list, world2proj);
+			}
+		}
+
+		if (m_testbed_mode == ETestbedMode::NerfSlam) {
+			if (m_nerf.visualize_prior_map_points) {
+				visualize_prior_map_points(list, world2proj, m_nerf.training.dataset.slam.map_points);
 			}
 		}
 
@@ -1394,6 +1415,11 @@ void Testbed::draw_gui() {
 	glFinish();
 }
 #endif //NGP_GUI
+
+void Testbed::add_prior_map_points(std::vector<Eigen::Vector3f>& map_points){
+	CUDA_CHECK_THROW(cudaDeviceSynchronize());
+	m_nerf.training.dataset.add_prior_map_points(map_points);
+}
 
 void Testbed::add_training_image(nlohmann::json frame, uint8_t *img, uint16_t *depth, uint8_t *alpha, uint8_t *mask) {
 	CUDA_CHECK_THROW(cudaDeviceSynchronize());

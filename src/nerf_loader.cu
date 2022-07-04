@@ -964,6 +964,13 @@ std::map<int, TrainingXForm> NerfDataset::get_posterior_extrinsic() {
 	return std::move(ret);
 }
 
+void NerfDataset::add_prior_map_points(std::vector<Eigen::Vector3f>& map_points) {
+	for(int i = 0; i < map_points.size(); i++){
+		this->slam.map_points.push_back(slam_point_to_ngp(map_points[i]));
+	}
+	this->slam.map_points_gpu.resize_and_copy_from_host(this->slam.map_points);
+}
+
 NerfDataset NerfDataset::add_training_image(nlohmann::json frame, uint8_t *img, uint16_t *depth, uint8_t *alpha, uint8_t *mask) {
 
 	if (!frame.contains("Id") ) {

@@ -113,6 +113,8 @@ struct NerfDataset {
 		Eigen::Vector4f rolling_shutter = Eigen::Vector4f::Zero();
 		uint32_t max_training_keyframes;
 		std::vector<int> Id;
+		std::vector<Eigen::Vector3f> map_points;
+		tcnn::GPUMemory<Eigen::Vector3f> map_points_gpu;
 	} slam;
 
 	uint32_t n_extra_dims() const {
@@ -120,6 +122,7 @@ struct NerfDataset {
 	}
 
 	std::map<int, TrainingXForm> get_posterior_extrinsic();
+	void add_prior_map_points(std::vector<Eigen::Vector3f>& map_points);
 	NerfDataset add_training_image(nlohmann::json frame, uint8_t *img, uint16_t *depth, uint8_t *alpha, uint8_t *mask);
 	void set_training_image(int frame_idx, const Eigen::Vector2i& image_resolution, const void* pixels, const void* depth_pixels, float depth_scale, bool image_data_on_gpu, EImageDataType image_type, EDepthDataType depth_type, float sharpen_amount = 0.f, bool white_transparent = false, bool black_transparent = false, uint32_t mask_color = 0, const Ray *rays = nullptr);
 
@@ -185,6 +188,12 @@ struct NerfDataset {
 		result.col(1) *= -1;
 		result.col(3) = (result.col(3) - offset) / scale;
 		return result;
+	}
+
+	Eigen::Vector3f slam_point_to_ngp(const Eigen::Vector3f& map_points) {
+		Eigen::Vector3f result = map_points;
+		result = result * scale + offset;
+		return std::move(result);
 	}
 
 	void nerf_ray_to_ngp(Ray& ray, bool scale_direction = false) {

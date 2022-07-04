@@ -451,6 +451,16 @@ inline __device__ int mip_from_dt(float dt, const Vector3f& pos) {
 	return min(NERF_CASCADES()-1, max(exponent, mip));
 }
 
+__global__ void generate_grid_samples_with_prior_map_points(const uint32_t n_elements, BoundingBox aabb, Eigen::Vector3f* map_points, NerfPosition* __restrict__ out, uint32_t* __restrict__ indices) {
+	const uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
+	if (i >= n_elements) return;
+
+	Vector3f pos = warp_position(map_points[i], aabb);
+
+	out[i] = { pos, warp_dt(MIN_CONE_STEPSIZE()) };
+	indices[i] = cascaded_grid_idx_at(pos, 0);;
+}
+
 __global__ void generate_grid_samples_nerf_nonuniform(const uint32_t n_elements, default_rng_t rng, const uint32_t step, BoundingBox aabb, const float* __restrict__ grid_in, NerfPosition* __restrict__ out, uint32_t* __restrict__ indices, uint32_t n_cascades, float thresh) {
 	const uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
 	if (i >= n_elements) return;
@@ -1809,7 +1819,7 @@ __global__ void compute_cam_gradient_train_nerf_gauss_newton_optimizer(
 		
 		#pragma unroll
 		for (uint32_t j = 0; j < 3; ++j) {
-			atomicAdd(&cam_pos_gradient[img][j], Jacobian[j] * loss[i]);
+			atomicAdd(&cam_pos_gradient[img][j], Jacobian[j] * loss[i] * n_rays);
 		}
 
 		#pragma unroll
@@ -1829,7 +1839,7 @@ __global__ void compute_cam_gradient_train_nerf_gauss_newton_optimizer(
 		// Atomically reduce the ray gradient into the xform gradient
 		#pragma unroll
 		for (uint32_t j = 0; j < 3; ++j) {
-			atomicAdd(&cam_rot_gradient[img][j], Jacobian[j] * loss[i]);
+			atomicAdd(&cam_rot_gradient[img][j], Jacobian[j] * loss[i] * n_rays);
 		}
 
 		#pragma unroll
@@ -2882,7 +2892,10 @@ void Testbed::update_density_grid_nerf(float decay, uint32_t n_uniform_density_g
 
 	m_nerf.density_grid.enlarge(n_elements);
 
-	const uint32_t n_density_grid_samples = n_uniform_density_grid_samples + n_nonuniform_density_grid_samples;
+	// The input for density network (fully fused mlp) needs to be a multiple of 128
+	const uint32_t n_prior_map_points = 128 * ((int)m_nerf.training.dataset.slam.map_points.size()/128);
+
+	const uint32_t n_density_grid_samples = n_uniform_density_grid_samples + n_nonuniform_density_grid_samples + n_prior_map_points;
 
 	const uint32_t padded_output_width = m_nerf_network->padded_density_output_width();
 
@@ -2947,6 +2960,16 @@ void Testbed::update_density_grid_nerf(float decay, uint32_t n_uniform_density_g
 			NERF_MIN_OPTICAL_THICKNESS()
 		);
 		m_rng.advance();
+
+		if(n_prior_map_points > 0){
+			linear_kernel(generate_grid_samples_with_prior_map_points, 0, stream,
+				n_prior_map_points,
+				m_aabb,
+				m_nerf.training.dataset.slam.map_points_gpu.data(),
+				density_grid_positions+n_uniform_density_grid_samples+n_nonuniform_density_grid_samples,
+				density_grid_indices+n_uniform_density_grid_samples+n_nonuniform_density_grid_samples
+			);
+		}
 
 		GPUMatrix<network_precision_t, RM> density_matrix(mlp_out, padded_output_width, n_density_grid_samples);
 		GPUMatrix<float> density_grid_position_matrix((float*)density_grid_positions, sizeof(NerfPosition)/sizeof(float), n_density_grid_samples);
@@ -3252,6 +3275,9 @@ void Testbed::train_nerf(uint32_t target_batch_size, bool get_loss_scalar, cudaS
 					// if (isnan(dr)) {
 					// 	throw std::runtime_error{"dr is nan!"};
 					// }
+
+					std::cout << "(GaussNewton) dt:" << dt << std::endl;
+					std::cout << "(GaussNewton) dr:" << dr << std::endl;
 
 					m_nerf.training.cam_pos_offset[i].translate(dt);
 					m_nerf.training.cam_rot_offset[i].rotate(dr);
