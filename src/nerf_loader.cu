@@ -957,32 +957,74 @@ std::map<int, TrainingXForm> NerfDataset::get_posterior_extrinsic() {
 	std::map<int, TrainingXForm> ret;
 
 	// Not using ngp_matrix_to_nerf, it is for blender format
-	for(size_t i_img = 0; i_img < this->n_images; i_img++){
-		ret[this->slam.Id[i_img]] = {ngp_matrix_to_slam(this->xforms[i_img].start), ngp_matrix_to_slam(this->xforms[i_img].end)};
+	for (const auto& iter : this->slam.FrameId2img_i) {
+		int Id = iter.first;
+		int i_img = iter.second;
+		ret[Id] = {ngp_matrix_to_slam(this->xforms[i_img].start), ngp_matrix_to_slam(this->xforms[i_img].end)};
 	}
 
 	return std::move(ret);
 }
 
-void NerfDataset::add_prior_map_points(std::vector<Eigen::Vector3f>& map_points) {
+void NerfDataset::add_prior_map_points(std::vector<Eigen::Vector3f>& map_points, std::vector<Eigen::Vector3f>& ref_map_points) {
 	for(int i = 0; i < map_points.size(); i++){
 		this->slam.map_points.push_back(slam_point_to_ngp(map_points[i]));
 	}
 	this->slam.map_points_gpu.resize_and_copy_from_host(this->slam.map_points);
+
+	for(int i = 0; i < ref_map_points.size(); i++){
+		this->slam.ref_map_points.push_back(slam_point_to_ngp(ref_map_points[i]));
+	}
+	this->slam.ref_map_points_gpu.resize_and_copy_from_host(this->slam.ref_map_points);
+}
+
+NerfDataset NerfDataset::update_training_image(nlohmann::json frame) {
+	if (!frame.contains("Id") ) {
+		throw std::runtime_error{"No image Id is provided"};
+	}
+
+	if (!frame.contains("transform_matrix")) {
+		throw std::runtime_error{"No transform_matrix provided, should be the prior in SLAM"};
+	}
+
+	std::map<int, int>::iterator it;
+	int Id = frame["Id"];
+
+	it = this->slam.FrameId2img_i.find(Id);
+	if (it == this->slam.FrameId2img_i.end()) {
+		throw std::runtime_error{"frame Id is not exists in NerfDataset"};
+	}
+
+	int i_img = it->second;
+
+	nlohmann::json& jsonmatrix_start = frame.contains("transform_matrix_start") ? frame["transform_matrix_start"] : frame["transform_matrix"];
+	nlohmann::json& jsonmatrix_end   = frame.contains("transform_matrix_end") ? frame["transform_matrix_end"] : jsonmatrix_start;
+
+
+	for (int m = 0; m < 3; ++m) {
+		for (int n = 0; n < 4; ++n) {
+			this->xforms[i_img].start(m, n) = float(jsonmatrix_start[m][n]);
+			this->xforms[i_img].end(m, n)   = float(jsonmatrix_end[m][n]);
+		}
+	}
+
+	std::cout << "[Update transform] transform.start:" << std::endl << this->xforms[i_img].start << std::endl;
+
+	// See https://github.com/NVlabs/instant-ngp/discussions/153?converting=1
+	// nerf_matrix_to_ngp is only use for blender format. Instant-ngp changes the blender format to ngp,
+	// Therefore write one for myself to scale and add offset.
+	this->xforms[i_img].start = this->slam_matrix_to_ngp(this->xforms[i_img].start);
+	this->xforms[i_img].end   = this->slam_matrix_to_ngp(this->xforms[i_img].end);
+
+	std::cout << "[Update transform] (to_ngp) transform.start:" << std::endl << this->xforms[i_img].start << std::endl;
+
+	return *this;
 }
 
 NerfDataset NerfDataset::add_training_image(nlohmann::json frame, uint8_t *img, uint16_t *depth, uint8_t *alpha, uint8_t *mask) {
 
 	if (!frame.contains("Id") ) {
 		throw std::runtime_error{"No image Id is provided"};
-	}
-
-	if (!frame.contains("h") || !frame.contains("w") ) {
-		throw std::runtime_error{"No height or width information provided"};
-	}
-
-	if (!frame.contains("transform_matrix")) {
-		throw std::runtime_error{"No transform_matrix provided, should be the prior in SLAM"};
 	}
 
 	// if(this->n_images == 0){
@@ -1009,11 +1051,18 @@ NerfDataset NerfDataset::add_training_image(nlohmann::json frame, uint8_t *img, 
 	this->pixelmemory.resize(this->slam.max_training_keyframes);
 	this->depthmemory.resize(this->slam.max_training_keyframes);
 	this->raymemory.resize(this->slam.max_training_keyframes);
-	this->slam.Id.resize(this->slam.max_training_keyframes);
 
 	if (this->n_images >= this->slam.max_training_keyframes) {
 		tlog::warning() << this->n_images << "(Number of keyframes) > " << this->slam.max_training_keyframes
 		<< "(slam_max_keyframes). Only the latest " << this->slam.max_training_keyframes << " will be used in training" ;
+	}
+
+	if (!frame.contains("h") || !frame.contains("w") ) {
+		throw std::runtime_error{"No height or width information provided"};
+	}
+
+	if (!frame.contains("transform_matrix")) {
+		throw std::runtime_error{"No transform_matrix provided, should be the prior in SLAM"};
 	}
 
 	size_t i_img = this->n_images % this->slam.max_training_keyframes;
@@ -1140,7 +1189,8 @@ NerfDataset NerfDataset::add_training_image(nlohmann::json frame, uint8_t *img, 
 	this->xforms[i_img].start = this->slam_matrix_to_ngp(this->xforms[i_img].start);
 	this->xforms[i_img].end = this->slam_matrix_to_ngp(this->xforms[i_img].end);
 
-	this->slam.Id[i_img] = frame["Id"];
+	int Id = frame["Id"];
+	this->slam.FrameId2img_i[Id] = i_img;
 	this->set_training_image(i_img, dst.res, dst.pixels, dst.depth_pixels, dst.depth_scale * this->scale, dst.image_data_on_gpu, dst.image_type, EDepthDataType::UShort, slam.sharpen_amount, dst.white_transparent, dst.black_transparent, dst.mask_color, dst.rays);
 
 	if (dst.image_data_on_gpu) {

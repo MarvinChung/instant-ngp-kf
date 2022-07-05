@@ -1011,9 +1011,15 @@ void Testbed::imgui() {
 	ImGui::End();
 }
 
-void Testbed::visualize_prior_map_points(ImDrawList* list, const Matrix<float, 4, 4>& world2proj, std::vector<Eigen::Vector3f> map_points) {
+void Testbed::visualize_prior_map_points(ImDrawList* list, const Matrix<float, 4, 4>& world2proj, const std::vector<Eigen::Vector3f>& map_points, const std::vector<Eigen::Vector3f>& ref_map_points) {
 	for (int i = 0; i < map_points.size(); ++i) {
-		visualize_prior_map_point(list, world2proj, map_points[i]);
+		// green
+		visualize_prior_map_point(list, world2proj, map_points[i], 0x40ffff40);
+	}
+
+	for (int i = 0; i < ref_map_points.size(); ++i) {
+		// red 
+		visualize_prior_map_point(list, world2proj, ref_map_points[i], 0xff4040ff);
 	}
 }
 
@@ -1062,7 +1068,7 @@ void Testbed::draw_visualizations(ImDrawList* list, const Matrix<float, 3, 4>& c
 
 		if (m_testbed_mode == ETestbedMode::NerfSlam) {
 			if (m_nerf.visualize_prior_map_points) {
-				visualize_prior_map_points(list, world2proj, m_nerf.training.dataset.slam.map_points);
+				visualize_prior_map_points(list, world2proj, m_nerf.training.dataset.slam.map_points, m_nerf.training.dataset.slam.ref_map_points);
 			}
 		}
 
@@ -1416,9 +1422,17 @@ void Testbed::draw_gui() {
 }
 #endif //NGP_GUI
 
-void Testbed::add_prior_map_points(std::vector<Eigen::Vector3f>& map_points){
+void Testbed::add_prior_map_points(std::vector<Eigen::Vector3f>& map_points, std::vector<Eigen::Vector3f>& ref_map_points){
 	CUDA_CHECK_THROW(cudaDeviceSynchronize());
-	m_nerf.training.dataset.add_prior_map_points(map_points);
+	m_nerf.training.dataset.add_prior_map_points(map_points, ref_map_points);
+}
+
+void Testbed::update_training_image(nlohmann::json frame) 
+{
+	CUDA_CHECK_THROW(cudaDeviceSynchronize());
+	m_nerf.training.dataset.update_training_image(frame);
+	m_nerf.training.update_transforms();
+	CUDA_CHECK_THROW(cudaDeviceSynchronize());
 }
 
 void Testbed::add_training_image(nlohmann::json frame, uint8_t *img, uint16_t *depth, uint8_t *alpha, uint8_t *mask) {

@@ -244,8 +244,8 @@ void add_debug_circle(ImDrawList* list, const Matrix<float, 4, 4>& proj, Eigen::
 	}
 }
 
-void visualize_prior_map_point(ImDrawList* list, const Matrix<float, 4, 4>& world2proj, const Eigen::Vector3f map_point) {
-	add_debug_circle(list, world2proj, map_point, 0.1, 0xff4040ff);
+void visualize_prior_map_point(ImDrawList* list, const Matrix<float, 4, 4>& world2proj, const Eigen::Vector3f map_point, uint32_t col) {
+	add_debug_circle(list, world2proj, map_point, 0.1, col);
 }
 
 void add_debug_line(ImDrawList* list, const Matrix<float, 4, 4>& proj, Vector3f a, Vector3f b, uint32_t col, float thickness) {
