@@ -357,6 +357,7 @@ public:
 
 	double calculate_iou(uint32_t n_samples=128*1024*1024, float scale_existing_results_factor=0.0, bool blocking=true, bool force_use_octree = true);
 	void draw_visualizations(ImDrawList* list, const Eigen::Matrix<float, 3, 4>& camera_matrix);
+	TrainingXForm get_posterior_extrinsic(int Id);
 	std::map<int, TrainingXForm> get_posterior_extrinsic();
 	void add_prior_map_points(std::vector<Eigen::Vector3f>& map_points, std::vector<Eigen::Vector3f>& ref_map_points);
 	void update_training_image(nlohmann::json frame);

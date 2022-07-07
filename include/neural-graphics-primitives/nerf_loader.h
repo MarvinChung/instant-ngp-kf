@@ -123,6 +123,7 @@ struct NerfDataset {
 		return (has_light_dirs ? 3u : 0u) + n_extra_learnable_dims;
 	}
 
+	TrainingXForm get_posterior_extrinsic(int Id);
 	std::map<int, TrainingXForm> get_posterior_extrinsic();
 	void add_prior_map_points(std::vector<Eigen::Vector3f>& map_points, std::vector<Eigen::Vector3f>& ref_map_points);
 	NerfDataset update_training_image(nlohmann::json frame);

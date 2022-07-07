@@ -1454,6 +1454,11 @@ std::map<int, TrainingXForm> Testbed::get_posterior_extrinsic() {
 	return std::move(m_nerf.training.dataset.get_posterior_extrinsic());
 }
 
+TrainingXForm Testbed::get_posterior_extrinsic(int Id) {
+	CUDA_CHECK_THROW(cudaDeviceSynchronize());
+	return m_nerf.training.dataset.get_posterior_extrinsic(Id);
+}
+
 void Testbed::train_and_render(bool skip_rendering) {
 
 	if (m_train) {

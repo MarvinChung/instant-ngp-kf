@@ -953,6 +953,18 @@ NerfDataset load_nerfslam(const std::vector<filesystem::path>& jsonpaths, float 
 	return result;
 }
 
+TrainingXForm NerfDataset::get_posterior_extrinsic(int Id) {
+    std::map<int, int>::iterator id_itr;
+    id_itr = this->slam.FrameId2img_i.find(Id);
+
+    if (id_itr == this->slam.FrameId2img_i.end()) {
+    	throw std::runtime_error{"query an Id not exist in dataset"};
+    }
+
+	int i_img = id_itr->second;
+	return {ngp_matrix_to_slam(this->xforms[i_img].start), ngp_matrix_to_slam(this->xforms[i_img].end)};
+}
+
 std::map<int, TrainingXForm> NerfDataset::get_posterior_extrinsic() {
 	std::map<int, TrainingXForm> ret;
 
@@ -1008,15 +1020,11 @@ NerfDataset NerfDataset::update_training_image(nlohmann::json frame) {
 		}
 	}
 
-	std::cout << "[Update transform] transform.start:" << std::endl << this->xforms[i_img].start << std::endl;
-
 	// See https://github.com/NVlabs/instant-ngp/discussions/153?converting=1
 	// nerf_matrix_to_ngp is only use for blender format. Instant-ngp changes the blender format to ngp,
 	// Therefore write one for myself to scale and add offset.
 	this->xforms[i_img].start = this->slam_matrix_to_ngp(this->xforms[i_img].start);
 	this->xforms[i_img].end   = this->slam_matrix_to_ngp(this->xforms[i_img].end);
-
-	std::cout << "[Update transform] (to_ngp) transform.start:" << std::endl << this->xforms[i_img].start << std::endl;
 
 	return *this;
 }
@@ -1025,6 +1033,16 @@ NerfDataset NerfDataset::add_training_image(nlohmann::json frame, uint8_t *img, 
 
 	if (!frame.contains("Id") ) {
 		throw std::runtime_error{"No image Id is provided"};
+	}
+
+	int Id = frame["Id"];
+
+
+	// If already exists, then update the transform only. No need to reallocate memory.
+	std::map<int, int>::iterator it;
+	it = this->slam.FrameId2img_i.find(Id);
+	if (it != this->slam.FrameId2img_i.end()) {
+		return update_training_image(frame);
 	}
 
 	// if(this->n_images == 0){
@@ -1189,7 +1207,6 @@ NerfDataset NerfDataset::add_training_image(nlohmann::json frame, uint8_t *img, 
 	this->xforms[i_img].start = this->slam_matrix_to_ngp(this->xforms[i_img].start);
 	this->xforms[i_img].end = this->slam_matrix_to_ngp(this->xforms[i_img].end);
 
-	int Id = frame["Id"];
 	this->slam.FrameId2img_i[Id] = i_img;
 	this->set_training_image(i_img, dst.res, dst.pixels, dst.depth_pixels, dst.depth_scale * this->scale, dst.image_data_on_gpu, dst.image_type, EDepthDataType::UShort, slam.sharpen_amount, dst.white_transparent, dst.black_transparent, dst.mask_color, dst.rays);
 
