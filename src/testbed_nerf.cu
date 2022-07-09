@@ -1587,7 +1587,7 @@ __global__ void compute_loss_kernel_train_nerf(
 			temp(4) = local_loss_vector(1);
 			temp(5) = local_loss_vector(2);
 
-			*de_dlogits_vector = temp;
+			*de_dlogits_vector =  temp;
 			de_dlogits_vector += 1;
 		}
 
@@ -1657,10 +1657,10 @@ __global__ void prepare_respective_rgbsimga_gradient(
 	dsigma_doutput += tid * padded_output_width;
 
 	const tcnn::vector_t<tcnn::network_precision_t, 4> local_dL_doutput = *(tcnn::vector_t<tcnn::network_precision_t, 4>*)dloss_doutput;
-	const tcnn::vector_t<tcnn::network_precision_t, 4> local_dr_doutput = local_dL_doutput;
-	const tcnn::vector_t<tcnn::network_precision_t, 4> local_dg_doutput = local_dL_doutput;
-	const tcnn::vector_t<tcnn::network_precision_t, 4> local_db_doutput = local_dL_doutput;
-	const tcnn::vector_t<tcnn::network_precision_t, 4> local_dsigma_doutput= local_dL_doutput;
+	tcnn::vector_t<tcnn::network_precision_t, 4> local_dr_doutput = local_dL_doutput;
+	tcnn::vector_t<tcnn::network_precision_t, 4> local_dg_doutput = local_dL_doutput;
+	tcnn::vector_t<tcnn::network_precision_t, 4> local_db_doutput = local_dL_doutput;
+	tcnn::vector_t<tcnn::network_precision_t, 4> local_dsigma_doutput= local_dL_doutput;
 	
 	local_dr_doutput[1] = local_dr_doutput[2] = local_dr_doutput[3] = 0;
 	local_dg_doutput[0] = local_dg_doutput[2] = local_dg_doutput[3] = 0;
@@ -1903,20 +1903,22 @@ __global__ void compute_cam_gradient_train_nerf_gauss_newton_optimizer(
 
 		// [debug check gradient]
 		const Vector3f pos_gradient = coords_gradient(j)->pos.p.cwiseProduct(warp_position_derivative(warped_pos, aabb));
-		ray_debug_gradient.o += pos_gradient;
+		ray_debug_gradient.o = pos_gradient;
 
 		// Scaled by t to account for the fact that further-away objects' position
 		// changes more rapidly as the direction changes.
 		const Vector3f dir_gradient = coords_gradient(j)->dir.d.cwiseProduct(warp_direction_derivative(coords(j)->dir.d));
-		ray_debug_gradient.d += pos_gradient * t + dir_gradient;
+		ray_debug_gradient.d = pos_gradient * t + dir_gradient;
 
-		if (i == 0 && j <= 10){
+		if (i == 0 && j <= 3){
 			Ray my_gradient = { Vector3f::Zero(), Vector3f::Zero() };
-			my_gradient.o = ray_o_jacobian.colwise().sum();
-			my_gradient.d = ray_d_jacobian.colwise().sum();
-			printf("[second order debug tid:%d] coords_gradient.o:[%f %f %f] my_gradient.o:[%f %f %f] coords_gradient.d:[%f %f %f] my_gradient.d:[%f %f %f]\n"
+			my_gradient.o = dlogits_dpos.colwise().sum();
+			my_gradient.d = (dlogits_dpos*t + dlogits_ddir).colwise().sum();
+			Vector3f red_debug = dlogits_dpos.row(0);
+			printf("[second order debug tid:%d] coords_gradient.o:[%f %f %f] my_gradient.o:[%f %f %f] red_debug:[%f %f %f] coords_gradient.d:[%f %f %f] my_gradient.d:[%f %f %f]\n"
 				,i, ray_debug_gradient.o[0], ray_debug_gradient.o[1], ray_debug_gradient.o[2], 
 				my_gradient.o[0],my_gradient.o[1],my_gradient.o[2],
+				red_debug[0], red_debug[1], red_debug[2],
 				ray_debug_gradient.d[0],ray_debug_gradient.d[1],ray_debug_gradient.d[2],
 				my_gradient.d[0],my_gradient.d[1],my_gradient.d[2]
 				);
@@ -3397,12 +3399,12 @@ void Testbed::train_nerf(uint32_t target_batch_size, bool get_loss_scalar, cudaS
 			else if (m_nerf.training.extrinsic_optimizer_mode == EExtrinsicOptimizer::GaussNewton) {
 				// Optimization step
 				for (uint32_t i = 0; i < m_nerf.training.n_images_for_training; ++i) {
-					// cam_pos_gradient and cam_rot_gradient stores sum Jacobian*residual instead of sum Jacobian. 
+					// cam_pos_gradient and cam_rot_gradient stores Jacobian*loss_vector 
 					Vector3f pos_b = -m_nerf.training.cam_pos_gradient[i];
 					Vector3f rot_b = -m_nerf.training.cam_rot_gradient[i];
 
-					Matrix3f pos_H = m_nerf.training.cam_pos_hessian[i].transpose() * m_nerf.training.cam_pos_hessian[i];
-					Matrix3f rot_H = m_nerf.training.cam_rot_hessian[i].transpose() * m_nerf.training.cam_rot_hessian[i];
+					Matrix3f pos_H = m_nerf.training.cam_pos_hessian[i];
+					Matrix3f rot_H = m_nerf.training.cam_rot_hessian[i];
 
 					Vector3f dt = pos_H.ldlt().solve(pos_b);
 					Vector3f dr = rot_H.ldlt().solve(rot_b);
@@ -3414,6 +3416,12 @@ void Testbed::train_nerf(uint32_t target_batch_size, bool get_loss_scalar, cudaS
 					// if (isnan(dr)) {
 					// 	throw std::runtime_error{"dr is nan!"};
 					// }
+					std::cout << "=====================" << std::endl;
+					std::cout << "(GaussNewton) pos_H:" << pos_H << std::endl;
+					std::cout << "(GaussNewton) pos_b:" << pos_b << std::endl;
+					
+					std::cout << "(GaussNewton) rot_H:" << rot_H << std::endl;
+					std::cout << "(GaussNewton) rot_b:" << rot_b << std::endl;
 
 					std::cout << "(GaussNewton) dt:" << dt << std::endl;
 					std::cout << "(GaussNewton) dr:" << dr << std::endl;
@@ -3681,6 +3689,10 @@ void Testbed::train_nerf_step(uint32_t target_batch_size, uint32_t n_rays_per_ba
 	// Don't scale loss_vector, since dloss_dmlp_out is scaled which means dlogitr_dmlp_out, dg_mlp_out, ... is scaled.
 	fill_rollover<Eigen::Vector3f><<<n_blocks_linear(target_batch_size), n_threads_linear, 0, stream>>>(
 		target_batch_size, 1, compacted_counter, loss_vector
+	);
+
+	fill_rollover<Eigen::Matrix<float, 6, 1>><<<n_blocks_linear(target_batch_size), n_threads_linear, 0, stream>>>(
+		target_batch_size, 1, compacted_counter, de_dlogits_vector
 	);
 
 	bool train_camera = m_nerf.training.optimize_extrinsics || m_nerf.training.optimize_distortion || m_nerf.training.optimize_focal_length;
