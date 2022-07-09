@@ -1442,8 +1442,7 @@ __global__ void compute_loss_kernel_train_nerf(
 	}
 
 	if (loss_vector) {
-		// since gradient is also the mean value (times 1/n_rays in loss_scale), we divide n_rays
-		loss_vector[tid] = lg.loss * inv_n_rays;
+		loss_vector[tid] = lg.loss;
 	}
 
 	if (de_dlogits_vector) {
@@ -1640,8 +1639,10 @@ __global__ void compute_loss_kernel_train_nerf(
 
 __global__ void prepare_respective_rgbsimga_gradient(
 	const uint32_t target_batch_size,
-	int padded_output_width,
-	tcnn::network_precision_t* dloss_doutput,
+	const uint32_t padded_output_width,
+	const float loss_scale,
+	const uint32_t* n_input_elements_ptr,
+	Eigen::Matrix<float, 6, 1>* de_dlogits_vector,
 	tcnn::network_precision_t* dr_doutput,
 	tcnn::network_precision_t* dg_doutput,
 	tcnn::network_precision_t* db_doutput,
@@ -1649,26 +1650,43 @@ __global__ void prepare_respective_rgbsimga_gradient(
 )
 {
 	const uint32_t tid = threadIdx.x + blockIdx.x * blockDim.x;
+
 	if (tid >= target_batch_size) { return; }
 
-	dloss_doutput += tid * padded_output_width;
+	const uint32_t n_input_elements = *n_input_elements_ptr;
+
+	//de_dlogits_vector: [dR/dlogitr, dG/dlogitg, dB/dlogitb, dR/dlogitsigma, dG/dlogitsigma, dB/dlogitsigma]
+	
+	if (tid >= n_input_elements) {
+		de_dlogits_vector[tid] = de_dlogits_vector[tid % target_batch_size] * n_input_elements / target_batch_size;
+	}
+
 	dr_doutput += tid * padded_output_width;
 	dg_doutput += tid * padded_output_width;
 	db_doutput += tid * padded_output_width;
 	dsigma_doutput += tid * padded_output_width;
 
-	const tcnn::vector_t<tcnn::network_precision_t, 4> local_dL_doutput = *(tcnn::vector_t<tcnn::network_precision_t, 4>*)dloss_doutput;
-	tcnn::vector_t<tcnn::network_precision_t, 4> local_dr_doutput = local_dL_doutput;
-	tcnn::vector_t<tcnn::network_precision_t, 4> local_dg_doutput = local_dL_doutput;
-	tcnn::vector_t<tcnn::network_precision_t, 4> local_db_doutput = local_dL_doutput;
-	tcnn::vector_t<tcnn::network_precision_t, 4> local_dsigma_doutput= local_dL_doutput;
-	
+	// loss_scale is a magic number (128) that will be divide in the gradient, which increase performance.
+	// therefore, we need to time it here before passing to backward.
+	Eigen::Matrix<float, 6 ,1> de_dlogits_vector_value = de_dlogits_vector[tid];
+
+	tcnn::vector_t<tcnn::network_precision_t, 4> local_dr_doutput;
+	local_dr_doutput[0] = loss_scale * de_dlogits_vector_value[0];
 	local_dr_doutput[1] = local_dr_doutput[2] = local_dr_doutput[3] = 0;
+
+	tcnn::vector_t<tcnn::network_precision_t, 4> local_dg_doutput;
+	local_dg_doutput[1] = loss_scale * de_dlogits_vector_value[1];
 	local_dg_doutput[0] = local_dg_doutput[2] = local_dg_doutput[3] = 0;
+
+	tcnn::vector_t<tcnn::network_precision_t, 4> local_db_doutput;
+	local_db_doutput[2] = loss_scale * de_dlogits_vector_value[2];
 	local_db_doutput[0] = local_db_doutput[1] = local_db_doutput[3] = 0;
+
+	tcnn::vector_t<tcnn::network_precision_t, 4> local_dsigma_doutput;
+	local_dsigma_doutput[3] = loss_scale * (de_dlogits_vector_value[3] + de_dlogits_vector_value[4] + de_dlogits_vector_value[5]);
 	local_dsigma_doutput[0] = local_dsigma_doutput[1] = local_dsigma_doutput[2] = 0;
 
-	// From loss kernel
+	// different to local_dL_doutput from loss kernel which its loss_scale = loss_scale/n_rays and penalization 
 	// local_dL_doutput[0] = loss_scale * (dloss_by_drgb.x() * network_to_rgb_derivative(local_network_output[0], rgb_activation) + fmaxf(0.0f, output_l2_reg * (float)local_network_output[0])); // Penalize way too large color values
 	// local_dL_doutput[1] = loss_scale * (dloss_by_drgb.y() * network_to_rgb_derivative(local_network_output[1], rgb_activation) + fmaxf(0.0f, output_l2_reg * (float)local_network_output[1]));
 	// local_dL_doutput[2] = loss_scale * (dloss_by_drgb.z() * network_to_rgb_derivative(local_network_output[2], rgb_activation) + fmaxf(0.0f, output_l2_reg * (float)local_network_output[2]));
@@ -1913,8 +1931,8 @@ __global__ void compute_cam_gradient_train_nerf_gauss_newton_optimizer(
 
 		if (i == 0 && j <= 3){
 			Ray my_gradient = { Vector3f::Zero(), Vector3f::Zero() };
-			my_gradient.o = dlogits_dpos.colwise().sum();
-			my_gradient.d = (dlogits_dpos*t + dlogits_ddir).colwise().sum();
+			my_gradient.o = dlogits_dpos.colwise().sum()/n_rays;
+			my_gradient.d = (dlogits_dpos*t + dlogits_ddir).colwise().sum()/n_rays;
 			Vector3f red_debug = dlogits_dpos.row(0);
 			printf("[second order debug tid:%d] coords_gradient.o:[%f %f %f] my_gradient.o:[%f %f %f] red_debug:[%f %f %f] coords_gradient.d:[%f %f %f] my_gradient.d:[%f %f %f]\n"
 				,i, ray_debug_gradient.o[0], ray_debug_gradient.o[1], ray_debug_gradient.o[2], 
@@ -3547,7 +3565,7 @@ void Testbed::train_nerf_step(uint32_t target_batch_size, uint32_t n_rays_per_ba
 	float* coords_gradient = std::get<8>(scratch);
 	float* max_level_compacted = std::get<9>(scratch);
 	uint32_t* ray_counter = std::get<10>(scratch);
-	//[dR/dlogtr, dG/dg, dB/dlogitb, dR/dlogitsigma, dG/dlogitsigma, dB/dlogitsigma]
+	//de_dlogits_vector: [dR/dlogitr, dG/dlogitg, dB/dlogitb, dR/dlogitsigma, dG/dlogitsigma, dB/dlogitsigma]
 	Eigen::Matrix<float, 6, 1> *de_dlogits_vector = std::get<11>(scratch); 
 	Eigen::Vector3f *loss_vector = std::get<12>(scratch);
 
@@ -3691,16 +3709,22 @@ void Testbed::train_nerf_step(uint32_t target_batch_size, uint32_t n_rays_per_ba
 	fill_rollover<float><<<n_blocks_linear(target_batch_size), n_threads_linear, 0, stream>>>(
 		target_batch_size, 1, compacted_counter, max_level_compacted
 	);
-	// Don't scale loss_vector, since dloss_dmlp_out is scaled which means dlogitr_dmlp_out, dg_mlp_out, ... is scaled.
-	// a = t*b + (1-t)*c
-	// Jacobian_a * loss_vector = (Jacobain_b + Jacobian_c) * loss_vector
+	// Don't scale loss_vector, scale de_dlogits_vector which means dlogitr_dmlp_out, dg_mlp_out, ... is scaled.
+	// A = t*B + (1-t)*C
+	// GaussNewton: 
+	// A^{T}*A = -A^{T}*g -> 
+	// t^2 B^{T}*B + (1-t)^{2} * C^{T}*C = -(t*B+(1-t)*C)*g
+	// Therefore, scale loss_vector will lead to wrong answer (it only scale g)
+	// Scale the de_dlogits_vector in prepare_respective_rgbsimga_gradient since fill_rollover_and_rescale doesn't support Eigen
+
+	// fill_rollover_and_rescale<Eigen::Matrix<float,6,1>><<<n_blocks_linear(target_batch_size), n_threads_linear, 0, stream>>>(
+	// 	target_batch_size, 1, compacted_counter, de_dlogits_vector
+	// );
+
 	fill_rollover<Eigen::Vector3f><<<n_blocks_linear(target_batch_size), n_threads_linear, 0, stream>>>(
 		target_batch_size, 1, compacted_counter, loss_vector
 	);
-
-	fill_rollover<Eigen::Matrix<float, 6, 1>><<<n_blocks_linear(target_batch_size), n_threads_linear, 0, stream>>>(
-		target_batch_size, 1, compacted_counter, de_dlogits_vector
-	);
+	
 
 	bool train_camera = m_nerf.training.optimize_extrinsics || m_nerf.training.optimize_distortion || m_nerf.training.optimize_focal_length;
 	bool train_extra_dims = m_nerf.training.dataset.n_extra_learnable_dims > 0 && m_nerf.training.optimize_extra_dims;
@@ -3832,7 +3856,9 @@ void Testbed::train_nerf_step(uint32_t target_batch_size, uint32_t n_rays_per_ba
 			linear_kernel(prepare_respective_rgbsimga_gradient, 0, stream,
 				target_batch_size,
 				padded_output_width,
-				dloss_dmlp_out, 
+				LOSS_SCALE,
+				compacted_counter,
+				de_dlogits_vector, 
 				dr_dmlp_out, 
 				dg_dmlp_out, 
 				db_dmlp_out, 
