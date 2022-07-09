@@ -1442,6 +1442,7 @@ __global__ void compute_loss_kernel_train_nerf(
 	}
 
 	if (loss_vector) {
+		// since gradient is also the mean value (times 1/n_rays in loss_scale), we divide n_rays
 		loss_vector[tid] = lg.loss * inv_n_rays;
 	}
 
@@ -1922,7 +1923,11 @@ __global__ void compute_cam_gradient_train_nerf_gauss_newton_optimizer(
 				ray_debug_gradient.d[0],ray_debug_gradient.d[1],ray_debug_gradient.d[2],
 				my_gradient.d[0],my_gradient.d[1],my_gradient.d[2]
 				);
+
+			
 		}
+
+		de_dlogits_vector++;
 	}
 
 	// Projection of the raydir gradient onto the plane normal to raydir,
@@ -3687,6 +3692,8 @@ void Testbed::train_nerf_step(uint32_t target_batch_size, uint32_t n_rays_per_ba
 		target_batch_size, 1, compacted_counter, max_level_compacted
 	);
 	// Don't scale loss_vector, since dloss_dmlp_out is scaled which means dlogitr_dmlp_out, dg_mlp_out, ... is scaled.
+	// a = t*b + (1-t)*c
+	// Jacobian_a * loss_vector = (Jacobain_b + Jacobian_c) * loss_vector
 	fill_rollover<Eigen::Vector3f><<<n_blocks_linear(target_batch_size), n_threads_linear, 0, stream>>>(
 		target_batch_size, 1, compacted_counter, loss_vector
 	);
