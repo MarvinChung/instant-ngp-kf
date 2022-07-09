@@ -113,10 +113,6 @@ struct NerfDataset {
 		Eigen::Vector4f rolling_shutter = Eigen::Vector4f::Zero();
 		uint32_t max_training_keyframes;
 		std::map<int, int> FrameId2img_i;
-		std::vector<Eigen::Vector3f> map_points;
-		tcnn::GPUMemory<Eigen::Vector3f> map_points_gpu;
-		std::vector<Eigen::Vector3f> ref_map_points;
-		tcnn::GPUMemory<Eigen::Vector3f> ref_map_points_gpu;
 	} slam;
 
 	uint32_t n_extra_dims() const {

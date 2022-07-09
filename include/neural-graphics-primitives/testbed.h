@@ -277,7 +277,7 @@ public:
 	void render_nerf(CudaRenderBuffer& render_buffer, const Eigen::Vector2i& max_res, const Eigen::Vector2f& focal_length, const Eigen::Matrix<float, 3, 4>& camera_matrix0, const Eigen::Matrix<float, 3, 4>& camera_matrix1, const Eigen::Vector4f& rolling_shutter, const Eigen::Vector2f& screen_center, cudaStream_t stream);
 	void render_image(CudaRenderBuffer& render_buffer, cudaStream_t stream);
 	void render_frame(const Eigen::Matrix<float, 3, 4>& camera_matrix0, const Eigen::Matrix<float, 3, 4>& camera_matrix1, const Eigen::Vector4f& nerf_rolling_shutter, CudaRenderBuffer& render_buffer, bool to_srgb = true) ;
-	void visualize_prior_map_points(ImDrawList* list, const Eigen::Matrix<float, 4, 4>& world2proj, const std::vector<Eigen::Vector3f>& map_points, const std::vector<Eigen::Vector3f>& ref_map_points);
+	void visualize_map_points(ImDrawList* list, const Eigen::Matrix<float, 4, 4>& world2proj, const std::vector<Eigen::Vector3f>& map_points, const std::vector<Eigen::Vector3f>& ref_map_points);
 	void visualize_nerf_cameras(ImDrawList* list, const Eigen::Matrix<float, 4, 4>& world2proj);
 	nlohmann::json load_network_config(const filesystem::path& network_config_path);
 	void reload_network_from_file(const std::string& network_config_path);
@@ -375,7 +375,7 @@ public:
 	void draw_visualizations(ImDrawList* list, const Eigen::Matrix<float, 3, 4>& camera_matrix);
 	TrainingXForm get_posterior_extrinsic(int Id);
 	std::map<int, TrainingXForm> get_posterior_extrinsic();
-	void add_prior_map_points(std::vector<Eigen::Vector3f>& map_points, std::vector<Eigen::Vector3f>& ref_map_points);
+	// void add_map_points(std::vector<Eigen::Vector3f>& map_points, std::vector<Eigen::Vector3f>& ref_map_points);
 	void update_training_image(nlohmann::json frame);
 	void add_training_image(nlohmann::json frame, uint8_t *img, uint16_t *depth=nullptr, uint8_t *alpha=nullptr, uint8_t *mask=nullptr);
 	void train_and_render(bool skip_rendering);
@@ -596,7 +596,7 @@ public:
 
 			bool optimize_distortion = false;
 			bool optimize_extrinsics = true; //false; 
-			EExtrinsicOptimizer extrinsic_optimizer_mode = EExtrinsicOptimizer::GaussNewton; // EExtrinsicOptimizer::Adam; 
+			EExtrinsicOptimizer extrinsic_optimizer_mode = EExtrinsicOptimizer::Adam; // EExtrinsicOptimizer::GaussNewton; // 
 			bool optimize_extra_dims = false;
 			bool optimize_focal_length = false;
 			bool optimize_exposure = false;
@@ -635,6 +635,7 @@ public:
 
 		} training = {};
 
+		// tcnn::GPUMemory<uint32_t> density_grid_sample_ct;
 		tcnn::GPUMemory<float> density_grid; // NERF_GRIDSIZE()^3 grid of EMA smoothed densities from the network
 		tcnn::GPUMemory<uint8_t> density_grid_bitfield;
 		uint8_t* get_density_grid_bitfield_mip(uint32_t mip);
@@ -658,7 +659,7 @@ public:
 
 		float cone_angle_constant = 1.f/256.f;
 
-		bool visualize_prior_map_points = false;
+		bool visualize_map_points = false;
 		bool visualize_cameras = true; // false;
 		bool render_with_camera_distortion = false;
 		CameraDistortion render_distortion = {};

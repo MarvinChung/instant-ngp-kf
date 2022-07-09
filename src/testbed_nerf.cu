@@ -451,15 +451,15 @@ inline __device__ int mip_from_dt(float dt, const Vector3f& pos) {
 	return min(NERF_CASCADES()-1, max(exponent, mip));
 }
 
-__global__ void generate_grid_samples_with_prior_map_points(const uint32_t n_elements, BoundingBox aabb, Eigen::Vector3f* map_points, NerfPosition* __restrict__ out, uint32_t* __restrict__ indices) {
-	const uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
-	if (i >= n_elements) return;
+// __global__ void generate_grid_samples_with_prior_map_points(const uint32_t n_elements, BoundingBox aabb, Eigen::Vector3f* map_points, NerfPosition* __restrict__ out, uint32_t* __restrict__ indices) {
+// 	const uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
+// 	if (i >= n_elements) return;
 
-	Vector3f pos = warp_position(map_points[i], aabb);
+// 	Vector3f pos = warp_position(map_points[i], aabb);
 
-	out[i] = { pos, warp_dt(MIN_CONE_STEPSIZE()) };
-	indices[i] = cascaded_grid_idx_at(pos, 0);;
-}
+// 	out[i] = { pos, warp_dt(MIN_CONE_STEPSIZE()) };
+// 	indices[i] = cascaded_grid_idx_at(pos, 0);;
+// }
 
 __global__ void generate_grid_samples_nerf_nonuniform(const uint32_t n_elements, default_rng_t rng, const uint32_t step, BoundingBox aabb, const float* __restrict__ grid_in, NerfPosition* __restrict__ out, uint32_t* __restrict__ indices, uint32_t n_cascades, float thresh) {
 	const uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
@@ -3057,9 +3057,8 @@ void Testbed::update_density_grid_nerf(float decay, uint32_t n_uniform_density_g
 	m_nerf.density_grid.enlarge(n_elements);
 
 	// The input for density network (fully fused mlp) needs to be a multiple of 128
-	const uint32_t n_prior_map_points = 0; //128 * ((int)m_nerf.training.dataset.slam.map_points.size()/128);
 
-	const uint32_t n_density_grid_samples = n_uniform_density_grid_samples + n_nonuniform_density_grid_samples + n_prior_map_points;
+	const uint32_t n_density_grid_samples = n_uniform_density_grid_samples + n_nonuniform_density_grid_samples;
 
 	const uint32_t padded_output_width = m_nerf_network->padded_density_output_width();
 
@@ -3081,6 +3080,8 @@ void Testbed::update_density_grid_nerf(float decay, uint32_t n_uniform_density_g
 		// m_nerf.training.n_images_for_training_prev = m_nerf.training.n_images_for_training;
 		if (m_training_step == 0) {
 			m_nerf.density_grid_ema_step = 0;
+			CUDA_CHECK_THROW(cudaMemsetAsync(m_nerf.density_grid.data(), 0, sizeof(float)*n_elements, stream));
+			// CUDA_CHECK_THROW(cudaMemsetAsync(m_nerf.density_grid_sample_ct.data(), 0, sizeof(uint32_t)*n_elements, stream));
 		}
 		// Only cull away empty regions where no camera is looking when the cameras are actually meaningful.
 		if (!m_nerf.training.dataset.has_rays) {
@@ -3090,9 +3091,7 @@ void Testbed::update_density_grid_nerf(float decay, uint32_t n_uniform_density_g
 				m_nerf.training.transforms_gpu.data(),
 				m_training_step == 0
 			);
-		} else {
-			CUDA_CHECK_THROW(cudaMemsetAsync(m_nerf.density_grid.data(), 0, sizeof(float)*n_elements, stream));
-		}
+		} 
 	}
 
 	uint32_t n_steps = 1;
