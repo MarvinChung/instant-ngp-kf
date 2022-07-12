@@ -587,7 +587,7 @@ NerfDataset load_nerf(const std::vector<filesystem::path>& jsonpaths, float shar
 					if (wa != dst.res.x() || ha != dst.res.y()) {
 						throw std::runtime_error{std::string{"Depth image has wrong resolution: "} + depthpath.str()};
 					}
-					//tlog::success() << "Depth loaded from " << depthpath;
+					tlog::success() << "Depth loaded from " << depthpath;
 				}
 			}
 
@@ -741,6 +741,7 @@ NerfDataset load_nerfslam(const std::vector<filesystem::path>& jsonpaths, float 
 	);
 
 	result.scale = NERF_SCALE;
+	// modify this
 	result.offset = {0.5f, 0.5f, 0.5f};
 
 	result.from_mitsuba = false;
@@ -927,7 +928,7 @@ NerfDataset load_nerfslam(const std::vector<filesystem::path>& jsonpaths, float 
 			result.slam.max_training_keyframes = int(json["max_training_keyframes"]);
 		}
 		else{
-			result.slam.max_training_keyframes =  result.aabb_scale * 256;
+			result.slam.max_training_keyframes =  2048; // result.aabb_scale * 256;
 		}
 	}
 
@@ -952,15 +953,84 @@ NerfDataset load_nerfslam(const std::vector<filesystem::path>& jsonpaths, float 
 	return result;
 }
 
-NerfDataset NerfDataset::add_training_image(nlohmann::json frame, uint8_t *img, uint16_t *depth, uint8_t *alpha, uint8_t *mask) {
+TrainingXForm NerfDataset::get_posterior_extrinsic(int Id) {
+    std::map<int, int>::iterator id_itr;
+    id_itr = this->slam.FrameId2img_i.find(Id);
 
-	std::cout << "add_training_image [1]" << std::endl;
-	if (!frame.contains("h") || !frame.contains("w") ) {
-		throw std::runtime_error{"No height or width information provided"};
+    if (id_itr == this->slam.FrameId2img_i.end()) {
+    	throw std::runtime_error{"query an Id not exist in dataset"};
+    }
+
+	int i_img = id_itr->second;
+	return {ngp_matrix_to_slam(this->xforms[i_img].start), ngp_matrix_to_slam(this->xforms[i_img].end)};
+}
+
+std::map<int, TrainingXForm> NerfDataset::get_posterior_extrinsic() {
+	std::map<int, TrainingXForm> ret;
+
+	// Not using ngp_matrix_to_nerf, it is for blender format
+	for (const auto& iter : this->slam.FrameId2img_i) {
+		int Id = iter.first;
+		int i_img = iter.second;
+		ret[Id] = {ngp_matrix_to_slam(this->xforms[i_img].start), ngp_matrix_to_slam(this->xforms[i_img].end)};
+	}
+
+	return std::move(ret);
+}
+
+NerfDataset NerfDataset::update_training_image(nlohmann::json frame) {
+	if (!frame.contains("Id") ) {
+		throw std::runtime_error{"No image Id is provided"};
 	}
 
 	if (!frame.contains("transform_matrix")) {
 		throw std::runtime_error{"No transform_matrix provided, should be the prior in SLAM"};
+	}
+
+	std::map<int, int>::iterator it;
+	int Id = frame["Id"];
+
+	it = this->slam.FrameId2img_i.find(Id);
+	if (it == this->slam.FrameId2img_i.end()) {
+		throw std::runtime_error{"frame Id is not exists in NerfDataset"};
+	}
+
+	int i_img = it->second;
+
+	nlohmann::json& jsonmatrix_start = frame.contains("transform_matrix_start") ? frame["transform_matrix_start"] : frame["transform_matrix"];
+	nlohmann::json& jsonmatrix_end   = frame.contains("transform_matrix_end") ? frame["transform_matrix_end"] : jsonmatrix_start;
+
+
+	for (int m = 0; m < 3; ++m) {
+		for (int n = 0; n < 4; ++n) {
+			this->xforms[i_img].start(m, n) = float(jsonmatrix_start[m][n]);
+			this->xforms[i_img].end(m, n)   = float(jsonmatrix_end[m][n]);
+		}
+	}
+
+	// See https://github.com/NVlabs/instant-ngp/discussions/153?converting=1
+	// nerf_matrix_to_ngp is only use for blender format. Instant-ngp changes the blender format to ngp,
+	// Therefore write one for myself to scale and add offset.
+	this->xforms[i_img].start = this->slam_matrix_to_ngp(this->xforms[i_img].start);
+	this->xforms[i_img].end   = this->slam_matrix_to_ngp(this->xforms[i_img].end);
+
+	return *this;
+}
+
+NerfDataset NerfDataset::add_training_image(nlohmann::json frame, uint8_t *img, uint16_t *depth, uint8_t *alpha, uint8_t *mask) {
+
+	if (!frame.contains("Id") ) {
+		throw std::runtime_error{"No image Id is provided"};
+	}
+
+	int Id = frame["Id"];
+
+
+	// If already exists, then update the transform only. No need to reallocate memory.
+	std::map<int, int>::iterator it;
+	it = this->slam.FrameId2img_i.find(Id);
+	if (it != this->slam.FrameId2img_i.end()) {
+		return update_training_image(frame);
 	}
 
 	// if(this->n_images == 0){
@@ -993,6 +1063,14 @@ NerfDataset NerfDataset::add_training_image(nlohmann::json frame, uint8_t *img, 
 		<< "(slam_max_keyframes). Only the latest " << this->slam.max_training_keyframes << " will be used in training" ;
 	}
 
+	if (!frame.contains("h") || !frame.contains("w") ) {
+		throw std::runtime_error{"No height or width information provided"};
+	}
+
+	if (!frame.contains("transform_matrix")) {
+		throw std::runtime_error{"No transform_matrix provided, should be the prior in SLAM"};
+	}
+
 	size_t i_img = this->n_images % this->slam.max_training_keyframes;
 	this->n_images += 1;
 
@@ -1014,8 +1092,6 @@ NerfDataset NerfDataset::add_training_image(nlohmann::json frame, uint8_t *img, 
 		throw std::runtime_error{"No img provided"};
 	}
 
-	
-	std::cout << "add_training_image [2]" << std::endl;
 	if (frame.contains("is_hdr")) {
 		// dst.pixels = load_exr_to_gpu(&dst.res.x(), &dst.res.y(), path.str().c_str(), fix_premult);
 		// Find a way to load exr from memory
@@ -1050,14 +1126,33 @@ NerfDataset NerfDataset::add_training_image(nlohmann::json frame, uint8_t *img, 
 
 	if (this->slam.enable_depth_loading && info.depth_scale > 0.f && depth) {
 		// int wa=0,ha=0;
+		// std::cout << "load depth ok" << std::endl;
+		// if(depth){
+		// 	std::cout << "have depth" << std::endl;
+		// 	for(int i = 0; i < height; i++){
+		// 		for(int j = 0; j < width; j++) {
+		// 			std::cout << *(depth + i*width +j) << " ";
+		// 		}
+		// 		std::cout << std::endl;
+		// 	}
+		// }
+
 		dst.depth_pixels = depth; //stbi_load_16_from_memory(depth, height*width, &wa, &ha, &comp, 1);
 		if (!dst.depth_pixels) {
 			throw std::runtime_error{"Could not load depth image"};
 		}
+
 		// if (wa != dst.res.x() || ha != dst.res.y()) {
 		// 	throw std::runtime_error{std::string{"Depth image has wrong resolution"}};
 		// }
 	}
+
+	// std::cout << "enable_depth_loading: " << this->slam.enable_depth_loading << std::endl;
+	// std::cout << "depth_scale: " << info.depth_scale << std::endl; 
+	// if(depth){
+	// 	std::cout << "have depth" << std::endl;
+	// }
+	// throw std::runtime_error{"stop here"};
 
 	nlohmann::json& jsonmatrix_start = frame.contains("transform_matrix_start") ? frame["transform_matrix_start"] : frame["transform_matrix"];
 	nlohmann::json& jsonmatrix_end =   frame.contains("transform_matrix_end") ? frame["transform_matrix_end"] : jsonmatrix_start;
@@ -1068,7 +1163,7 @@ NerfDataset NerfDataset::add_training_image(nlohmann::json frame, uint8_t *img, 
 			frame["driver_parameters"].value("LightY", 0.f),
 			frame["driver_parameters"].value("LightZ", 0.f)
 		);
-		this->metadata[i_img].light_dir = this->nerf_direction_to_ngp(light_dir.normalized());
+		this->metadata[i_img].light_dir = light_dir.normalized(); // this->nerf_direction_to_ngp(light_dir.normalized());
 		this->has_light_dirs = true;
 		this->n_extra_learnable_dims = 0;
 	}
@@ -1112,14 +1207,14 @@ NerfDataset NerfDataset::add_training_image(nlohmann::json frame, uint8_t *img, 
 	this->metadata[i_img].principal_point = slam.principal_point;
 	this->metadata[i_img].camera_distortion = slam.camera_distortion;
 
-	this->xforms[i_img].start = this->nerf_matrix_to_ngp(this->xforms[i_img].start);
-	this->xforms[i_img].end = this->nerf_matrix_to_ngp(this->xforms[i_img].end);
+	// See https://github.com/NVlabs/instant-ngp/discussions/153?converting=1
+	// nerf_matrix_to_ngp is only use for blender format. Instant-ngp changes the blender format to ngp,
+	// Therefore write one for myself to scale and add offset.
+	this->xforms[i_img].start = this->slam_matrix_to_ngp(this->xforms[i_img].start);
+	this->xforms[i_img].end = this->slam_matrix_to_ngp(this->xforms[i_img].end);
 
-	std::cout << "add_training_image [3]" << std::endl;
-
+	this->slam.FrameId2img_i[Id] = i_img;
 	this->set_training_image(i_img, dst.res, dst.pixels, dst.depth_pixels, dst.depth_scale * this->scale, dst.image_data_on_gpu, dst.image_type, EDepthDataType::UShort, slam.sharpen_amount, dst.white_transparent, dst.black_transparent, dst.mask_color, dst.rays);
-
-	std::cout << "add_training_image [4]" << std::endl;
 
 	if (dst.image_data_on_gpu) {
 		CUDA_CHECK_THROW(cudaFree(dst.pixels));
@@ -1130,8 +1225,6 @@ NerfDataset NerfDataset::add_training_image(nlohmann::json frame, uint8_t *img, 
 	free(dst.depth_pixels);
 
 	CUDA_CHECK_THROW(cudaDeviceSynchronize());
-
-	std::cout << "add_training_image [5]" << std::endl;
 
 	return *this;
 }

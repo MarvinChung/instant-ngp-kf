@@ -277,6 +277,7 @@ public:
 	void render_nerf(CudaRenderBuffer& render_buffer, const Eigen::Vector2i& max_res, const Eigen::Vector2f& focal_length, const Eigen::Matrix<float, 3, 4>& camera_matrix0, const Eigen::Matrix<float, 3, 4>& camera_matrix1, const Eigen::Vector4f& rolling_shutter, const Eigen::Vector2f& screen_center, cudaStream_t stream);
 	void render_image(CudaRenderBuffer& render_buffer, cudaStream_t stream);
 	void render_frame(const Eigen::Matrix<float, 3, 4>& camera_matrix0, const Eigen::Matrix<float, 3, 4>& camera_matrix1, const Eigen::Vector4f& nerf_rolling_shutter, CudaRenderBuffer& render_buffer, bool to_srgb = true) ;
+	void visualize_map_points(ImDrawList* list, const Eigen::Matrix<float, 4, 4>& world2proj);	
 	void visualize_nerf_cameras(ImDrawList* list, const Eigen::Matrix<float, 4, 4>& world2proj);
 	nlohmann::json load_network_config(const filesystem::path& network_config_path);
 	void reload_network_from_file(const std::string& network_config_path);
@@ -315,6 +316,22 @@ public:
 	void set_camera_to_training_view(int trainview);
 	void reset_camera();
 	bool keyboard_event();
+	// void train_nerf_camera_second_order(
+	// 		uint32_t target_batch_size,
+	// 		uint32_t n_rays_per_batch,
+	// 		uint32_t n_rays_total,
+	// 		uint32_t *ray_counter,
+	// 		Eigen::Vector3f *loss,
+	// 		uint32_t* ray_indices,
+	// 		Ray* rays_unnormalized,
+	// 		uint32_t* numsteps,
+	// 		float* coords_compacted,
+	// 		float* coords_gradient,
+	// 		tcnn::network_precision_t* dloss_dmlp_out,
+	// 		bool sample_focal_plane_proportional_to_error,
+	// 		bool sample_image_proportional_to_error,
+	// 		std::unique_ptr<tcnn::Context> forward_ctx,
+	// 		cudaStream_t stream);
 	void generate_training_samples_sdf(Eigen::Vector3f* positions, float* distances, uint32_t n_to_generate, cudaStream_t stream, bool uniform_only);
 	void update_density_grid_nerf(float decay, uint32_t n_uniform_density_grid_samples, uint32_t n_nonuniform_density_grid_samples, cudaStream_t stream);
 	void update_density_grid_mean_and_bitfield(cudaStream_t stream);
@@ -356,6 +373,10 @@ public:
 
 	double calculate_iou(uint32_t n_samples=128*1024*1024, float scale_existing_results_factor=0.0, bool blocking=true, bool force_use_octree = true);
 	void draw_visualizations(ImDrawList* list, const Eigen::Matrix<float, 3, 4>& camera_matrix);
+	TrainingXForm get_posterior_extrinsic(int Id);
+	std::map<int, TrainingXForm> get_posterior_extrinsic();
+	// void add_map_points(std::vector<Eigen::Vector3f>& map_points, std::vector<Eigen::Vector3f>& ref_map_points);
+	void update_training_image(nlohmann::json frame);
 	void add_training_image(nlohmann::json frame, uint8_t *img, uint16_t *depth=nullptr, uint8_t *alpha=nullptr, uint8_t *mask=nullptr);
 	void train_and_render(bool skip_rendering);
 	filesystem::path training_data_path() const;
@@ -518,8 +539,16 @@ public:
 			std::vector<Eigen::Vector3f> cam_pos_gradient;
 			tcnn::GPUMemory<Eigen::Vector3f> cam_pos_gradient_gpu;
 
+			// for second order
+			std::vector<Eigen::Matrix3f> cam_pos_hessian;
+			tcnn::GPUMemory<Eigen::Matrix3f> cam_pos_hessian_gpu;
+
 			std::vector<Eigen::Vector3f> cam_rot_gradient;
 			tcnn::GPUMemory<Eigen::Vector3f> cam_rot_gradient_gpu;
+
+			// for second order
+			std::vector<Eigen::Matrix3f> cam_rot_hessian;
+			tcnn::GPUMemory<Eigen::Matrix3f> cam_rot_hessian_gpu;
 
 			tcnn::GPUMemory<Eigen::Array3f> cam_exposure_gpu;
 			std::vector<Eigen::Array3f> cam_exposure_gradient;
@@ -566,7 +595,8 @@ public:
 			bool train_envmap = false;
 
 			bool optimize_distortion = false;
-			bool optimize_extrinsics = false;
+			bool optimize_extrinsics = true; //false; 
+			EExtrinsicOptimizer extrinsic_optimizer_mode = EExtrinsicOptimizer::Adam; // EExtrinsicOptimizer::GaussNewton; // 
 			bool optimize_extra_dims = false;
 			bool optimize_focal_length = false;
 			bool optimize_exposure = false;
@@ -609,7 +639,11 @@ public:
 		tcnn::GPUMemory<uint8_t> density_grid_bitfield;
 		uint8_t* get_density_grid_bitfield_mip(uint32_t mip);
 		tcnn::GPUMemory<float> density_grid_mean;
+		float density_grid_mean_cpu;
 		uint32_t density_grid_ema_step = 0;
+
+		tcnn::GPUMemory<uint32_t> density_grid_sample_ct;
+		std::vector<Eigen::Vector3f> map_points_positions;
 
 		uint32_t max_cascade = 0;
 
@@ -628,7 +662,8 @@ public:
 
 		float cone_angle_constant = 1.f/256.f;
 
-		bool visualize_cameras = false;
+		bool visualize_map_points = true;
+		bool visualize_cameras = true; // false;
 		bool render_with_camera_distortion = false;
 		CameraDistortion render_distortion = {};
 
@@ -789,7 +824,7 @@ public:
 	float m_picture_in_picture_res = 0.f; // if non zero, requests a small second picture :)
 
 	bool m_imgui_enabled = true; // tab to toggle
-	bool m_visualize_unit_cube = false;
+	bool m_visualize_unit_cube = true; //false;
 	bool m_snap_to_pixel_centers = false;
 
 	Eigen::Vector2f m_parallax_shift = {0.f, 0.f}; // to shift the viewer's head position by some amount parallel to the screen

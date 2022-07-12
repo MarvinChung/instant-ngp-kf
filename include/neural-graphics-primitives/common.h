@@ -151,6 +151,13 @@ enum class ETestbedMode : int {
 	NerfSlam,
 };
 
+enum class EExtrinsicOptimizer : int {
+	Adam,
+	GaussNewton,
+};
+
+static constexpr const char* ExtrinsicOptimizerStr = "Adam\0GaussNewton\0\0";
+
 enum class ESDFGroundTruthMode : int {
 	RaytracedMesh,
 	SpheretracedMesh,
