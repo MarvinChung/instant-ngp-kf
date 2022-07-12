@@ -277,7 +277,7 @@ public:
 	void render_nerf(CudaRenderBuffer& render_buffer, const Eigen::Vector2i& max_res, const Eigen::Vector2f& focal_length, const Eigen::Matrix<float, 3, 4>& camera_matrix0, const Eigen::Matrix<float, 3, 4>& camera_matrix1, const Eigen::Vector4f& rolling_shutter, const Eigen::Vector2f& screen_center, cudaStream_t stream);
 	void render_image(CudaRenderBuffer& render_buffer, cudaStream_t stream);
 	void render_frame(const Eigen::Matrix<float, 3, 4>& camera_matrix0, const Eigen::Matrix<float, 3, 4>& camera_matrix1, const Eigen::Vector4f& nerf_rolling_shutter, CudaRenderBuffer& render_buffer, bool to_srgb = true) ;
-	void visualize_map_points(ImDrawList* list, const Eigen::Matrix<float, 4, 4>& world2proj, const std::vector<Eigen::Vector3f>& map_points, const std::vector<Eigen::Vector3f>& ref_map_points);
+	void visualize_map_points(ImDrawList* list, const Eigen::Matrix<float, 4, 4>& world2proj);	
 	void visualize_nerf_cameras(ImDrawList* list, const Eigen::Matrix<float, 4, 4>& world2proj);
 	nlohmann::json load_network_config(const filesystem::path& network_config_path);
 	void reload_network_from_file(const std::string& network_config_path);
@@ -612,7 +612,7 @@ public:
 			uint32_t n_steps_since_error_map_update = 0;
 			uint32_t n_rays_since_error_map_update = 0;
 
-			float near_distance = 0.0f; // 0.2f;
+			float near_distance = 0.2f;
 			float density_grid_decay = 0.95f;
 			int view = 0;
 
@@ -639,10 +639,11 @@ public:
 		tcnn::GPUMemory<uint8_t> density_grid_bitfield;
 		uint8_t* get_density_grid_bitfield_mip(uint32_t mip);
 		tcnn::GPUMemory<float> density_grid_mean;
+		float density_grid_mean_cpu;
 		uint32_t density_grid_ema_step = 0;
 
 		tcnn::GPUMemory<uint32_t> density_grid_sample_ct;
-		tcnn::GPUMemory<float> density_grid_sample_ct_mean;
+		std::vector<Eigen::Vector3f> map_points_positions;
 
 		uint32_t max_cascade = 0;
 
@@ -661,7 +662,7 @@ public:
 
 		float cone_angle_constant = 1.f/256.f;
 
-		bool visualize_map_points = false;
+		bool visualize_map_points = true;
 		bool visualize_cameras = true; // false;
 		bool render_with_camera_distortion = false;
 		CameraDistortion render_distortion = {};

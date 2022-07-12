@@ -461,6 +461,38 @@ inline __device__ int mip_from_dt(float dt, const Vector3f& pos) {
 // 	indices[i] = cascaded_grid_idx_at(pos, 0);;
 // }
 
+__global__ void generate_grid_map_points_nerf_nonuniform(const uint32_t n_elements, default_rng_t rng, const uint32_t step, BoundingBox aabb, const uint32_t* __restrict__ grid_in, Vector3f* __restrict__ out, uint32_t *counter, uint32_t n_cascades, uint32_t thresh) {
+	const uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
+	if (i >= n_elements) return;
+
+	// 1 random number to select the level, 3 to select the position.
+	rng.advance(i*4);
+	uint32_t level = (uint32_t)(random_val(rng) * n_cascades) % n_cascades;
+
+	// Select grid cell that sample_count is greater than threshold.
+	uint32_t idx;
+	idx = ((i+step*n_elements) * 56924617) % (NERF_GRIDSIZE()*NERF_GRIDSIZE()*NERF_GRIDSIZE());
+	idx += level * NERF_GRIDSIZE()*NERF_GRIDSIZE()*NERF_GRIDSIZE();
+
+	if (grid_in[idx] > thresh) {
+		// Random position within that cellq
+
+		uint32_t pos_idx = idx % (NERF_GRIDSIZE()*NERF_GRIDSIZE()*NERF_GRIDSIZE());
+
+		uint32_t x = tcnn::morton3D_invert(pos_idx>>0);
+		uint32_t y = tcnn::morton3D_invert(pos_idx>>1);
+		uint32_t z = tcnn::morton3D_invert(pos_idx>>2);
+
+		Vector3f pos = ((Vector3f{(float)x, (float)y, (float)z} + random_val_3d(rng)) / NERF_GRIDSIZE() - Vector3f::Constant(0.5f)) * scalbnf(1.0f, level) + Vector3f::Constant(0.5f);
+
+		uint32_t base = atomicAdd(counter, 1);
+
+		out[base] = { warp_position(pos, aabb) };
+	}
+
+	
+}
+
 __global__ void generate_grid_samples_nerf_nonuniform(const uint32_t n_elements, default_rng_t rng, const uint32_t step, BoundingBox aabb, const float* __restrict__ grid_in, NerfPosition* __restrict__ out, uint32_t* __restrict__ indices, uint32_t n_cascades, float thresh) {
 	const uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
 	if (i >= n_elements) return;
@@ -539,7 +571,7 @@ __global__ void ema_triangulated_grid_samples_nerf(const uint32_t n_elements,
 	if (i >= n_elements) return;
 
 	float importance = grid_in[i]; // only importance from density network
-	float coeff = (1.0f + log2f(1.0f + grid_sample_count[i]));
+	// float coeff = (1.0f + log2f(1.0f + grid_sample_count[i]));
 
 	// float ema_debias_old = 1 - (float)powf(decay, count);
 	// float ema_debias_new = 1 - (float)powf(decay, count+1);
@@ -551,7 +583,12 @@ __global__ void ema_triangulated_grid_samples_nerf(const uint32_t n_elements,
 	// Basically, we want the grid cell turned on as soon as _ANYTHING_ visible is in there.
 
 	float prev_val = grid_out[i]; // contain old_importance * (1.0f + log2f(1.0f + old_grid_sample_count[i]))
-	float val = (prev_val<0.f) ? prev_val : fmaxf(prev_val * decay, importance*coeff);
+	if (i < 10 && (prev_val > 1000 || importance > 1000)) {
+		printf("[tid: %d] prev_val:%f importance:%f\n", i, prev_val, importance);
+	}
+
+	// float val = (prev_val<0.f) ? prev_val : fmaxf(prev_val * decay, importance*coeff);
+	float val = (prev_val<0.f) ? prev_val : fmaxf(prev_val * decay, importance);
 	grid_out[i] = val;
 }
 
@@ -1318,6 +1355,7 @@ __global__ void compute_loss_kernel_train_nerf(
 
 	// Vector3f pos_arr[NERF_STEPS()];
 	// float weight_arr[NERF_STEPS()];
+	uint32_t proposed_sample_count = 0;
 
 	for (; compacted_numsteps < numsteps; ++compacted_numsteps) {
 		if (T < EPSILON) {
@@ -1337,6 +1375,23 @@ __global__ void compute_loss_kernel_train_nerf(
 		hitpoint += weight * pos;
 		depth_ray += weight * cur_depth;
 		T *= (1.f - alpha);
+
+		if ( weight > 0.1f ) {
+
+			// Compute the numbers of times being sampled if the pos has a reasonable weight
+			uint32_t mip = mip_from_dt(dt, pos);
+			uint32_t idx = cascaded_grid_idx_at(pos, mip);
+
+			// extend to other level
+			for(int level = mip; level < NERF_CASCADES()-1; level++){
+				// set a threshold to prevent overflow
+				if (density_grid_sample_ct[idx+grid_mip_offset(level)] < (1<<22)) {
+					atomicAdd(&density_grid_sample_ct[idx+grid_mip_offset(level)], 1);
+				}
+			}
+
+			proposed_sample_count += density_grid_sample_ct[idx+grid_mip_offset(mip)];
+		}
 
 		// if( tid == 0 )
 		// 	printf("weight:%f alpha:%f T:%f density:%f dt:%f \n", weight, alpha, T, density, dt);
@@ -1359,6 +1414,7 @@ __global__ void compute_loss_kernel_train_nerf(
 	uint32_t ray_idx = ray_indices_in[tid];
 	rng.advance(ray_idx * N_MAX_RANDOM_SAMPLES_PER_RAY());
 
+	float inv_proposed_sample_count = 1.0f/proposed_sample_count;
 
 	float img_pdf = 1.0f;
 	uint32_t img = image_idx(ray_idx, n_rays, n_rays_total, n_training_images, cdf_img, &img_pdf);
@@ -1515,21 +1571,34 @@ __global__ void compute_loss_kernel_train_nerf(
 		depth_ray2 += weight * depth;
 		T *= (1.f - alpha);
 
-		// if( tid == 0) {
-		// 	printf("[tid:%d] k:%d weight:%f \n", tid, k, weight);
-		// }
+		float density_derivative = network_to_density_derivative(float(local_network_output[3]), density_activation);
 
-		if (weight > 0.2f && !is_background_ray) {
-			// Compute the numbers of times being sampled if the ray is not a background ray
+		float dweight_bound_loss_doutput = 0.f;
+		if( proposed_sample_count > 0 && !is_background_ray)
+		{
 			uint32_t mip = mip_from_dt(dt, pos);
 			uint32_t idx = cascaded_grid_idx_at(pos, mip);
 
-			// printf("[tid:%d] k:%d is_background_ray:%d weight:%f \n", tid, k, is_background_ray, weight);
+			float grid_proposed_hit_prob = density_grid_sample_ct[idx+grid_mip_offset(mip)] * inv_proposed_sample_count;
+			// penalize only when weight is lower than proposed_prob 
+			// float weight_bound_loss = fmaxf(0.0f, grid_proposed_hit_prob-weight);
+			// float weight_bound_loss = (grid_proposed_hit_prob-weight)*(grid_proposed_hit_prob-weight);
 
-			// extend to other level
-			for(int level = mip; level < NERF_CASCADES()-1; level++)
-				atomicAdd(&density_grid_sample_ct[idx+grid_mip_offset(level)], 1);
+			// times 0.01
+			// Here T = T_k * (1 - alpha_k)
+			// if (grid_proposed_hit_prob-weight > 0.0f)
+			// 	dweight_bound_loss_doutput = -0.02 * (grid_proposed_hit_prob-weight) * T * dt * density_derivative;
+				
+			// times 0.01
+			// dweight_bound_loss_doutput = -0.02 * (grid_proposed_hit_prob-weight) * T * dt * density_derivative;
+
+			if( tid == 0)
+				printf("[tid:%d] k:%d grid_proposed_hit_prob:%f weight:%f TODO:design loss\n", tid, k, grid_proposed_hit_prob, weight);
 		}
+		
+		// if( tid == 0) {
+		// 	printf("[tid:%d] k:%d weight:%f \n", tid, k, weight);
+		// }
 
 
 		// we know the suffix of this ray compared to where we are up to. note the suffix depends on this step's alpha as suffix = (1-alpha)*(somecolor), so dsuffix/dalpha = -somecolor = -suffix/(1-alpha)
@@ -1543,7 +1612,6 @@ __global__ void compute_loss_kernel_train_nerf(
 		local_dL_doutput[1] = loss_scale * (dloss_by_drgb.y() * network_to_rgb_derivative(local_network_output[1], rgb_activation) + fmaxf(0.0f, output_l2_reg * (float)local_network_output[1]));
 		local_dL_doutput[2] = loss_scale * (dloss_by_drgb.z() * network_to_rgb_derivative(local_network_output[2], rgb_activation) + fmaxf(0.0f, output_l2_reg * (float)local_network_output[2]));
 
-		float density_derivative = network_to_density_derivative(float(local_network_output[3]), density_activation);
 		const float depth_suffix = depth_ray - depth_ray2;
 		const float depth_supervision = depth_loss_gradient * (T * depth - depth_suffix);
 
@@ -1557,6 +1625,7 @@ __global__ void compute_loss_kernel_train_nerf(
 
 		local_dL_doutput[3] =
 			loss_scale * dloss_by_dmlp +
+			loss_scale * dweight_bound_loss_doutput + 
 			(float(local_network_output[3]) < 0.0f ? -output_l1_reg_density : 0.0f) +
 			(float(local_network_output[3]) > -10.0f && depth < near_distance ? 1e-4f : 0.0f);
 
@@ -3051,16 +3120,28 @@ void Testbed::update_density_grid_nerf(float decay, uint32_t n_uniform_density_g
 
 	GPUMemoryArena::Allocation alloc;
 	auto scratch = allocate_workspace_and_distribute<
-		NerfPosition,       // positions at which the NN will be queried for density evaluation
-		uint32_t,           // indices of corresponding density grid cells
-		float,              // the resulting densities `density_grid_tmp` to be merged with the running estimate of the grid
-		network_precision_t // output of the MLP before being converted to densities.
-	>(stream, &alloc, n_density_grid_samples, n_elements, n_elements, n_density_grid_samples * padded_output_width);
+		NerfPosition,        // positions at which the NN will be queried for density evaluation
+		uint32_t,            // indices of corresponding density grid cells
+		float,               // the resulting densities `density_grid_tmp` to be merged with the running estimate of the grid
+		network_precision_t, // output of the MLP before being converted to densities.
+		Eigen::Vector3f,     // positions for mappoint that should be surface (use for visualization)
+		uint32_t
+	>(	
+		stream, &alloc, 
+		n_density_grid_samples, 
+		n_elements, 
+		n_elements, 
+		n_density_grid_samples * padded_output_width,
+		n_nonuniform_density_grid_samples,
+		1
+	);
 
 	NerfPosition* density_grid_positions = std::get<0>(scratch);
 	uint32_t* density_grid_indices = std::get<1>(scratch);
 	float* density_grid_tmp = std::get<2>(scratch);
 	network_precision_t* mlp_out = std::get<3>(scratch);
+	Eigen::Vector3f* map_points_positions = std::get<4>(scratch);
+	uint32_t* map_points_counter  = std::get<5>(scratch);
 
 	if (m_training_step == 0 || m_nerf.training.n_images_for_training != m_nerf.training.n_images_for_training_prev) {
 		// Move this line to the last line of train in testbed.cu
@@ -3079,6 +3160,40 @@ void Testbed::update_density_grid_nerf(float decay, uint32_t n_uniform_density_g
 				m_training_step == 0
 			);
 		} 
+	}
+
+	if(m_nerf.map_points_positions.size() < 300000){
+		CUDA_CHECK_THROW(cudaMemsetAsync(map_points_counter, 0, sizeof(uint32_t), stream));
+
+		linear_kernel(generate_grid_map_points_nerf_nonuniform, 0, stream,
+			n_nonuniform_density_grid_samples,
+			m_rng,
+			m_nerf.density_grid_ema_step,
+			m_aabb,
+			m_nerf.density_grid_sample_ct.data(),
+			map_points_positions,
+			map_points_counter,
+			m_nerf.max_cascade+1,
+			32 // A grid being sampled 32 points should be consider as surface
+		);
+
+		uint32_t map_points_counter_cpu;
+		CUDA_CHECK_THROW(cudaMemcpyAsync(&map_points_counter_cpu, map_points_counter, sizeof(uint32_t), cudaMemcpyDeviceToHost, stream));
+		
+		std::vector<Eigen::Vector3f> map_points_positions_cpu;
+		if (map_points_counter_cpu > 0)
+			map_points_positions_cpu.resize(map_points_counter_cpu);
+
+		for( uint32_t i = 0; i < map_points_counter_cpu; i++) {
+			CUDA_CHECK_THROW(cudaMemcpyAsync(&map_points_positions_cpu[i], map_points_positions + i, sizeof(Eigen::Vector3f), cudaMemcpyDeviceToHost, stream));
+		}
+
+		std::cout << "[testbed_nerf] insert map_points number: " << map_points_counter_cpu << std::endl;
+
+		if (map_points_counter_cpu > 0)
+			m_nerf.map_points_positions.insert(m_nerf.map_points_positions.end(), map_points_positions_cpu.begin(), map_points_positions_cpu.end());
+
+		m_rng.advance();
 	}
 
 	uint32_t n_steps = 1;
@@ -3140,29 +3255,20 @@ void Testbed::update_density_grid_mean_and_bitfield(cudaStream_t stream) {
 	size_t size_including_mips = grid_mip_offset(NERF_CASCADES())/8;
 	m_nerf.density_grid_bitfield.enlarge(size_including_mips);
 	m_nerf.density_grid_mean.enlarge(reduce_sum_workspace_size(n_elements));
-	m_nerf.density_grid_sample_ct_mean.enlarge(reduce_sum_workspace_size(n_elements));
 
 	CUDA_CHECK_THROW(cudaMemsetAsync(m_nerf.density_grid_mean.data(), 0, sizeof(float), stream));
 	reduce_sum(m_nerf.density_grid.data(), [n_elements] __device__ (float val) { return fmaxf(val, 0.f) / (n_elements); }, m_nerf.density_grid_mean.data(), n_elements, stream);
-
-	CUDA_CHECK_THROW(cudaMemsetAsync(m_nerf.density_grid_sample_ct_mean.data(), 0, sizeof(float), stream));
-	reduce_sum(m_nerf.density_grid_sample_ct.data(), [n_elements] __device__ (float val) { return fmaxf(val, 0.f) / (n_elements); }, m_nerf.density_grid_sample_ct_mean.data(), n_elements, stream);
-
 	linear_kernel(grid_to_bitfield, 0, stream, n_elements/8 * NERF_CASCADES(), m_nerf.density_grid.data(), m_nerf.density_grid_bitfield.data(), m_nerf.density_grid_mean.data());
 
 	for (uint32_t level = 1; level < NERF_CASCADES(); ++level) {
 		linear_kernel(bitfield_max_pool, 0, stream, n_elements/64, m_nerf.get_density_grid_bitfield_mip(level-1), m_nerf.get_density_grid_bitfield_mip(level));
 	}
 
+	m_nerf.density_grid_mean.copy_to_host(&m_nerf.density_grid_mean_cpu, 1);
 
-	// debug:
-	std::vector<float> density_mean_cpu(1);
-	std::vector<float> sample_mean_cpu(1); // the usage may be incorrect since not considering NERF_CASCADES()
-	m_nerf.density_grid_mean.copy_to_host(density_mean_cpu, 1);
-	m_nerf.density_grid_sample_ct_mean.copy_to_host(sample_mean_cpu, 1);
+	assert(!isinf(m_nerf.density_grid_mean_cpu));
 
-	std::cout << "[testbed_nerf.cu] denisty_mean: " << density_mean_cpu[0] << std::endl;
-	std::cout << "[testbed_nerf.cu] sample_mean: " << sample_mean_cpu[0] << std::endl;
+	std::cout << "[testbed_nerf.cu] denisty_mean: " << m_nerf.density_grid_mean_cpu << std::endl;
 
 }
 

@@ -1126,6 +1126,17 @@ NerfDataset NerfDataset::add_training_image(nlohmann::json frame, uint8_t *img, 
 
 	if (this->slam.enable_depth_loading && info.depth_scale > 0.f && depth) {
 		// int wa=0,ha=0;
+		// std::cout << "load depth ok" << std::endl;
+		// if(depth){
+		// 	std::cout << "have depth" << std::endl;
+		// 	for(int i = 0; i < height; i++){
+		// 		for(int j = 0; j < width; j++) {
+		// 			std::cout << *(depth + i*width +j) << " ";
+		// 		}
+		// 		std::cout << std::endl;
+		// 	}
+		// }
+
 		dst.depth_pixels = depth; //stbi_load_16_from_memory(depth, height*width, &wa, &ha, &comp, 1);
 		if (!dst.depth_pixels) {
 			throw std::runtime_error{"Could not load depth image"};
@@ -1135,6 +1146,13 @@ NerfDataset NerfDataset::add_training_image(nlohmann::json frame, uint8_t *img, 
 		// 	throw std::runtime_error{std::string{"Depth image has wrong resolution"}};
 		// }
 	}
+
+	// std::cout << "enable_depth_loading: " << this->slam.enable_depth_loading << std::endl;
+	// std::cout << "depth_scale: " << info.depth_scale << std::endl; 
+	// if(depth){
+	// 	std::cout << "have depth" << std::endl;
+	// }
+	// throw std::runtime_error{"stop here"};
 
 	nlohmann::json& jsonmatrix_start = frame.contains("transform_matrix_start") ? frame["transform_matrix_start"] : frame["transform_matrix"];
 	nlohmann::json& jsonmatrix_end =   frame.contains("transform_matrix_end") ? frame["transform_matrix_end"] : jsonmatrix_start;
