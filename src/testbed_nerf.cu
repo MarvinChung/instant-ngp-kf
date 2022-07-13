@@ -3312,9 +3312,19 @@ float Testbed::Nerf::Training::Counters::update_after_training(uint32_t target_b
 	return loss_scalar;
 }
 
+void Testbed::clear_weight() {
+	CUDA_CHECK_THROW(cudaDeviceSynchronize());
+	m_trainer->initialize_params();
+}
+
 void Testbed::train_nerf(uint32_t target_batch_size, bool get_loss_scalar, cudaStream_t stream) {
 	if (m_nerf.training.n_images_for_training == 0) {
 		return;
+	}
+
+	// clear weight to prevent overfit
+	if (m_nerf.training.n_images_for_training % 32 == 0) {
+		clear_weight();
 	}
 
 	if (m_nerf.training.include_sharpness_in_error) {

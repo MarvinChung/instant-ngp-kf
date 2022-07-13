@@ -288,6 +288,7 @@ public:
 	}
 	bool reprojection_available() { return m_dlss; }
 	static ELossType string_to_loss_type(const std::string& str);
+	void clear_weight();
 	void reset_network();
 	void create_empty_nerf_dataset(size_t n_images, int aabb_scale = 1, bool is_hdr = false);
 	// void update_training_info_from_dataset();
