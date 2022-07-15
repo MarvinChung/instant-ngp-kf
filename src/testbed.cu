@@ -1437,6 +1437,8 @@ void Testbed::update_training_image(nlohmann::json frame)
 
 void Testbed::add_training_image(nlohmann::json frame, uint8_t *img, uint16_t *depth, uint8_t *alpha, uint8_t *mask) {
 	CUDA_CHECK_THROW(cudaDeviceSynchronize());
+	CUDA_CHECK_THROW(cudaStreamSynchronize(m_training_stream));
+
 	m_training_data_available = true;
 
 	if(depth != nullptr && m_nerf.training.n_images_for_training == 0){
@@ -1444,12 +1446,36 @@ void Testbed::add_training_image(nlohmann::json frame, uint8_t *img, uint16_t *d
 	}
 	
 	m_nerf.training.dataset.add_training_image(frame, img, depth, alpha, mask);
-	m_nerf.training.n_images_for_training = (int)m_nerf.training.dataset.n_images;
+
+	m_nerf.training.cam_pos_gradient.resize(m_nerf.training.dataset.n_images, Vector3f::Zero());
+	m_nerf.training.cam_pos_gradient_gpu.resize_and_copy_from_host(m_nerf.training.cam_pos_gradient);
+
+	m_nerf.training.cam_pos_hessian.resize(m_nerf.training.dataset.n_images, Eigen::Matrix3f::Zero());
+	m_nerf.training.cam_pos_hessian_gpu.resize_and_copy_from_host(m_nerf.training.cam_pos_hessian);
+
+	m_nerf.training.cam_exposure.resize(m_nerf.training.dataset.n_images, AdamOptimizer<Array3f>(1e-3f));
+	m_nerf.training.cam_pos_offset.resize(m_nerf.training.dataset.n_images, AdamOptimizer<Vector3f>(1e-4f));
+	m_nerf.training.cam_rot_offset.resize(m_nerf.training.dataset.n_images, RotationAdamOptimizer(1e-4f));
+	m_nerf.training.cam_focal_length_offset = AdamOptimizer<Vector2f>(1e-5f);
+
+	m_nerf.training.cam_rot_gradient.resize(m_nerf.training.dataset.n_images, Vector3f::Zero());
+	m_nerf.training.cam_rot_gradient_gpu.resize_and_copy_from_host(m_nerf.training.cam_rot_gradient);
+
+	m_nerf.training.cam_rot_hessian.resize(m_nerf.training.dataset.n_images, Eigen::Matrix3f::Zero());
+	m_nerf.training.cam_rot_hessian_gpu.resize_and_copy_from_host(m_nerf.training.cam_rot_hessian);
+
+	m_nerf.training.cam_exposure_gradient.resize(m_nerf.training.dataset.n_images, Array3f::Zero());
+	m_nerf.training.cam_exposure_gpu.resize_and_copy_from_host(m_nerf.training.cam_exposure_gradient);
+	m_nerf.training.cam_exposure_gradient_gpu.resize_and_copy_from_host(m_nerf.training.cam_exposure_gradient);
+
+	m_nerf.training.cam_focal_length_gradient = Vector2f::Zero();
+	m_nerf.training.cam_focal_length_gradient_gpu.resize_and_copy_from_host(&m_nerf.training.cam_focal_length_gradient, 1);
 
 	m_nerf.training.update_metadata();
 	m_nerf.training.update_transforms();
 
 	// wait until gpu dataset is completed
+	CUDA_CHECK_THROW(cudaStreamSynchronize(m_training_stream));
 	CUDA_CHECK_THROW(cudaDeviceSynchronize());
 }
 
@@ -2255,6 +2281,14 @@ void Testbed::train(uint32_t batch_size) {
 	if (!m_dlss) {
 		// No immediate redraw necessary
 		reset_accumulation(false, false);
+	}
+
+	if (m_testbed_mode == ETestbedMode::NerfSlam) {
+		// SLAM mode train images sequentially
+		m_nerf.training.n_images_for_training = std::min(m_nerf.training.n_images_for_training+1, (int)m_nerf.training.dataset.n_images);
+		if (m_nerf.training.n_images_for_training == 0) {
+			throw std::runtime_error{"No image in the dataset. Perhaps no frame in the transform.json, then you need to call add_training_image."};
+		}
 	}
 
 	uint32_t n_prep_to_skip = (m_testbed_mode == ETestbedMode::Nerf || m_testbed_mode == ETestbedMode::NerfSlam) ? tcnn::clamp(m_training_step / 16u, 1u, 16u) : 1u;

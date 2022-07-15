@@ -1592,7 +1592,7 @@ __global__ void compute_loss_kernel_train_nerf(
 			// times 0.01
 			// dweight_bound_loss_doutput = -0.02 * (grid_proposed_hit_prob-weight) * T * dt * density_derivative;
 
-			if( tid == 0)
+			if(tid == 0)
 				printf("[tid:%d] k:%d grid_proposed_hit_prob:%f weight:%f TODO:design loss\n", tid, k, grid_proposed_hit_prob, weight);
 		}
 		
@@ -1984,7 +1984,7 @@ __global__ void compute_cam_gradient_train_nerf_gauss_newton_optimizer(
 		const Vector3f dir_gradient = coords_gradient(j)->dir.d.cwiseProduct(warp_direction_derivative(coords(j)->dir.d));
 		ray_debug_gradient.d = pos_gradient * t + dir_gradient;
 
-		if (i == 0 && j <= 3){
+		if (i == 0 && j <= 10){
 			Ray my_gradient = { Vector3f::Zero(), Vector3f::Zero() };
 			my_gradient.o = dlogits_dpos.colwise().sum()/n_rays;
 			my_gradient.d = (dlogits_dpos*t + dlogits_ddir).colwise().sum()/n_rays;
@@ -2910,7 +2910,7 @@ void Testbed::load_nerfslam() {
 			throw std::runtime_error{"NeRF data path must either be a json file or a directory containing json files."};
 		}
 
-		m_nerf.training.dataset = ngp::load_nerfslam(json_paths, m_nerf.sharpen);
+		m_nerf.training.dataset = ngp::load_nerf(json_paths, m_nerf.sharpen);
 	}
 
 	// Can set with the gui
@@ -2918,26 +2918,26 @@ void Testbed::load_nerfslam() {
 
 	m_nerf.rgb_activation = m_nerf.training.dataset.is_hdr ? ENerfActivation::Exponential : ENerfActivation::Logistic;
 
-	m_nerf.training.n_images_for_training = (int)m_nerf.training.dataset.n_images;
+	m_nerf.training.n_images_for_training = 0;
 
-	m_nerf.training.cam_pos_gradient.resize(m_nerf.training.dataset.slam.max_training_keyframes, Vector3f::Zero());
+	m_nerf.training.cam_pos_gradient.resize(m_nerf.training.dataset.n_images, Vector3f::Zero());
 	m_nerf.training.cam_pos_gradient_gpu.resize_and_copy_from_host(m_nerf.training.cam_pos_gradient);
 
-	m_nerf.training.cam_pos_hessian.resize(m_nerf.training.dataset.slam.max_training_keyframes, Eigen::Matrix3f::Zero());
+	m_nerf.training.cam_pos_hessian.resize(m_nerf.training.dataset.n_images, Eigen::Matrix3f::Zero());
 	m_nerf.training.cam_pos_hessian_gpu.resize_and_copy_from_host(m_nerf.training.cam_pos_hessian);
 
-	m_nerf.training.cam_exposure.resize(m_nerf.training.dataset.slam.max_training_keyframes, AdamOptimizer<Array3f>(1e-3f));
-	m_nerf.training.cam_pos_offset.resize(m_nerf.training.dataset.slam.max_training_keyframes, AdamOptimizer<Vector3f>(1e-4f));
-	m_nerf.training.cam_rot_offset.resize(m_nerf.training.dataset.slam.max_training_keyframes, RotationAdamOptimizer(1e-4f));
+	m_nerf.training.cam_exposure.resize(m_nerf.training.dataset.n_images, AdamOptimizer<Array3f>(1e-3f));
+	m_nerf.training.cam_pos_offset.resize(m_nerf.training.dataset.n_images, AdamOptimizer<Vector3f>(1e-4f));
+	m_nerf.training.cam_rot_offset.resize(m_nerf.training.dataset.n_images, RotationAdamOptimizer(1e-4f));
 	m_nerf.training.cam_focal_length_offset = AdamOptimizer<Vector2f>(1e-5f);
 
-	m_nerf.training.cam_rot_gradient.resize(m_nerf.training.dataset.slam.max_training_keyframes, Vector3f::Zero());
+	m_nerf.training.cam_rot_gradient.resize(m_nerf.training.dataset.n_images, Vector3f::Zero());
 	m_nerf.training.cam_rot_gradient_gpu.resize_and_copy_from_host(m_nerf.training.cam_rot_gradient);
 
-	m_nerf.training.cam_rot_hessian.resize(m_nerf.training.dataset.slam.max_training_keyframes, Eigen::Matrix3f::Zero());
+	m_nerf.training.cam_rot_hessian.resize(m_nerf.training.dataset.n_images, Eigen::Matrix3f::Zero());
 	m_nerf.training.cam_rot_hessian_gpu.resize_and_copy_from_host(m_nerf.training.cam_rot_hessian);
 
-	m_nerf.training.cam_exposure_gradient.resize(m_nerf.training.dataset.slam.max_training_keyframes, Array3f::Zero());
+	m_nerf.training.cam_exposure_gradient.resize(m_nerf.training.dataset.n_images, Array3f::Zero());
 	m_nerf.training.cam_exposure_gpu.resize_and_copy_from_host(m_nerf.training.cam_exposure_gradient);
 	m_nerf.training.cam_exposure_gradient_gpu.resize_and_copy_from_host(m_nerf.training.cam_exposure_gradient);
 
@@ -2951,8 +2951,8 @@ void Testbed::load_nerfslam() {
 		// m_nerf.training.optimize_exposure = true;
 	}
 
-	m_nerf.render_distortion = m_nerf.training.dataset.slam.camera_distortion;
-	m_screen_center = Eigen::Vector2f::Constant(1.f) - m_nerf.training.dataset.slam.principal_point;
+	m_nerf.render_distortion = m_nerf.training.dataset.camera_distortion;
+	m_screen_center = Eigen::Vector2f::Constant(1.f) - m_nerf.training.dataset.principal_point;
 
 	if (!is_pot(m_nerf.training.dataset.aabb_scale)) {
 		throw std::runtime_error{std::string{"NeRF dataset's `aabb_scale` must be a power of two, but is "} + std::to_string(m_nerf.training.dataset.aabb_scale)};
@@ -3230,7 +3230,7 @@ void Testbed::update_density_grid_nerf(float decay, uint32_t n_uniform_density_g
 		// 	linear_kernel(generate_grid_samples_with_prior_map_points, 0, stream,
 		// 		n_prior_map_points,
 		// 		m_aabb,
-		// 		m_nerf.training.dataset.slam.map_points_gpu.data(),
+		// 		m_nerf.training.dataset.map_points_gpu.data(),
 		// 		density_grid_positions+n_uniform_density_grid_samples+n_nonuniform_density_grid_samples,
 		// 		density_grid_indices+n_uniform_density_grid_samples+n_nonuniform_density_grid_samples
 		// 	);
@@ -3317,6 +3317,15 @@ void Testbed::train_nerf(uint32_t target_batch_size, bool get_loss_scalar, cudaS
 		return;
 	}
 
+	if (m_nerf.training.extrinsic_optimizer_mode == EExtrinsicOptimizer::Adam) {
+		m_nerf.training.n_steps_between_cam_updates = 16;
+	}
+	else if (m_nerf.training.extrinsic_optimizer_mode == EExtrinsicOptimizer::GaussNewton) 
+	{
+		// second order should update use the graident to the current image.
+		m_nerf.training.n_steps_between_cam_updates = 1;
+	}
+
 	if (m_nerf.training.include_sharpness_in_error) {
 		size_t n_cells = NERF_GRIDSIZE() * NERF_GRIDSIZE() * NERF_GRIDSIZE() * NERF_CASCADES();
 		if (m_nerf.training.sharpness_grid.size() < n_cells) {
@@ -3358,8 +3367,15 @@ void Testbed::train_nerf(uint32_t target_batch_size, bool get_loss_scalar, cudaS
 		uint32_t n_samples_per_image = (m_nerf.training.n_steps_between_error_map_updates * m_nerf.training.counters_rgb.rays_per_batch) / m_nerf.training.dataset.n_images;
 		Eigen::Vector2i res = m_nerf.training.dataset.metadata[0].resolution;
 		m_nerf.training.error_map.resolution = Vector2i::Constant((int)(std::sqrt(std::sqrt((float)n_samples_per_image)) * 3.5f)).cwiseMin(res);
-		m_nerf.training.error_map.data.resize(m_nerf.training.error_map.resolution.prod() * m_nerf.training.dataset.n_images);
-		CUDA_CHECK_THROW(cudaMemsetAsync(m_nerf.training.error_map.data.data(), 0, m_nerf.training.error_map.data.get_bytes(), stream));
+		
+		// m_nerf.training.error_map.data.resize(m_nerf.training.error_map.resolution.prod() * m_nerf.training.dataset.n_images);
+		// CUDA_CHECK_THROW(cudaMemsetAsync(m_nerf.training.error_map.data.data(), 0, m_nerf.training.error_map.data.get_bytes(), stream));
+		
+		tcnn::GPUMemory<float> temp_error_map_data;
+		temp_error_map_data.resize(m_nerf.training.error_map.resolution.prod() * m_nerf.training.dataset.n_images);
+		CUDA_CHECK_THROW(cudaMemsetAsync(temp_error_map_data.data(), 0, temp_error_map_data.get_bytes(), stream));
+		temp_error_map_data.copy_from_device(m_nerf.training.error_map.data);
+		m_nerf.training.error_map.data = std::move(temp_error_map_data);
 	}
 
 	float* envmap_gradient = m_nerf.training.train_envmap ? m_envmap.envmap->gradients() : nullptr;
@@ -3896,128 +3912,131 @@ void Testbed::train_nerf_step(uint32_t target_batch_size, uint32_t n_rays_per_ba
 			);
 		}
 		// For second order optimizer
-		else if(m_nerf.training.extrinsic_optimizer_mode == EExtrinsicOptimizer::GaussNewton)
+		else if (m_nerf.training.n_steps_since_cam_update == m_nerf.training.n_steps_between_cam_updates-1) 
 		{
-			// train_nerf_camera_second_order(
-			// 	target_batch_size,
-			// 	n_rays_per_batch, 
-			// 	n_rays_total,
-			// 	ray_counter, 
-			// 	loss_vector,
-			// 	ray_indices,
-			// 	rays_unnormalized,
-			// 	numsteps,
-			// 	coords_compacted,
-			// 	coords_gradient,
-			// 	dloss_dmlp_out,
-			// 	sample_focal_plane_proportional_to_error,
-			// 	sample_image_proportional_to_error,
-			// 	ctx,
-			// 	stream
-			// );
-
-			// Find the Jacobian matrix of dloss_vector/dcamera for second order optimizer, Adam only needs dloss_scalar/dcamera
-			// Still use target_batch_size instead of compacted size since Fused_MLP requires the batch size to be multiple of 128
-
-			GPUMemoryArena::Allocation jacobian_alloc;
-			auto scratch = allocate_workspace_and_distribute<
-				network_precision_t, // dlogitr_dmlp_out
-				network_precision_t, // dlogitg_dmlp_out
-				network_precision_t, // dlogitb_dmlp_out
-				network_precision_t, // dlogitsigma_dmlp_out
-				float, // coords_logitr_gradient
-				float, // coords_logitg_gradient
-				float, // coords_logitb_gradient
-				float // coords_logitsigma_gradient
-			>(
-				stream, &jacobian_alloc,
-				target_batch_size * padded_output_width,
-				target_batch_size * padded_output_width,
-				target_batch_size * padded_output_width,
-				target_batch_size * padded_output_width,
-				target_batch_size * floats_per_coord,
-				target_batch_size * floats_per_coord,
-				target_batch_size * floats_per_coord,
-				target_batch_size * floats_per_coord
-			);
-
-			network_precision_t* dr_dmlp_out 	      = std::get<0>(scratch);
-			network_precision_t* dg_dmlp_out 	      = std::get<1>(scratch);
-			network_precision_t* db_dmlp_out 	      = std::get<2>(scratch);
-			network_precision_t* dsigma_dmlp_out      = std::get<3>(scratch);
-			float* dlogitr_dcoords        			  = std::get<4>(scratch);
-			float* dlogitg_dcoords 			  		  = std::get<5>(scratch);
-			float* dlogitb_dcoords 			          = std::get<6>(scratch);
-			float* dlogitsigma_dcoords 		          = std::get<7>(scratch);
-
-			GPUMatrix<network_precision_t> logitr_gradient_matrix(dr_dmlp_out, padded_output_width, target_batch_size);
-			GPUMatrix<network_precision_t> logitg_gradient_matrix(dg_dmlp_out, padded_output_width, target_batch_size);
-			GPUMatrix<network_precision_t> logitb_gradient_matrix(db_dmlp_out, padded_output_width, target_batch_size);
-			GPUMatrix<network_precision_t> logitsigma_gradient_matrix(dsigma_dmlp_out, padded_output_width, target_batch_size);
-
-			GPUMatrix<float> coords_logitr_gradient_matrix((float*)dlogitr_dcoords, floats_per_coord, target_batch_size);
-			GPUMatrix<float> coords_logitg_gradient_matrix((float*)dlogitg_dcoords, floats_per_coord, target_batch_size);
-			GPUMatrix<float> coords_logitb_gradient_matrix((float*)dlogitb_dcoords, floats_per_coord, target_batch_size);
-			GPUMatrix<float> coords_logitsigma_gradient_matrix((float*)dlogitsigma_dcoords, floats_per_coord, target_batch_size);
-
-			linear_kernel(prepare_respective_rgbsimga_gradient, 0, stream,
-				target_batch_size,
-				padded_output_width,
-				LOSS_SCALE,
-				compacted_counter,
-				de_dlogits_vector, 
-				dr_dmlp_out, 
-				dg_dmlp_out, 
-				db_dmlp_out, 
-				dsigma_dmlp_out);
-
+			// Don't accumulate gradient from different Nerf Model.
+			if(m_nerf.training.extrinsic_optimizer_mode == EExtrinsicOptimizer::GaussNewton)
 			{
-				// auto ctx = m_network->forward(stream, compacted_coords_matrix, &compacted_rgbsigma_matrix, false, prepare_input_gradients);
-				m_network->backward(stream, *ctx, compacted_coords_matrix, compacted_rgbsigma_matrix, logitr_gradient_matrix, &coords_logitr_gradient_matrix, false, EGradientMode::Ignore);
-				m_network->backward(stream, *ctx, compacted_coords_matrix, compacted_rgbsigma_matrix, logitg_gradient_matrix, &coords_logitg_gradient_matrix, false, EGradientMode::Ignore);
-				m_network->backward(stream, *ctx, compacted_coords_matrix, compacted_rgbsigma_matrix, logitb_gradient_matrix, &coords_logitb_gradient_matrix, false, EGradientMode::Ignore);
-				m_network->backward(stream, *ctx, compacted_coords_matrix, compacted_rgbsigma_matrix, logitsigma_gradient_matrix, &coords_logitsigma_gradient_matrix, false, EGradientMode::Ignore);
+				// train_nerf_camera_second_order(
+				// 	target_batch_size,
+				// 	n_rays_per_batch, 
+				// 	n_rays_total,
+				// 	ray_counter, 
+				// 	loss_vector,
+				// 	ray_indices,
+				// 	rays_unnormalized,
+				// 	numsteps,
+				// 	coords_compacted,
+				// 	coords_gradient,
+				// 	dloss_dmlp_out,
+				// 	sample_focal_plane_proportional_to_error,
+				// 	sample_image_proportional_to_error,
+				// 	ctx,
+				// 	stream
+				// );
+
+				// Find the Jacobian matrix of dloss_vector/dcamera for second order optimizer, Adam only needs dloss_scalar/dcamera
+				// Still use target_batch_size instead of compacted size since Fused_MLP requires the batch size to be multiple of 128
+
+				GPUMemoryArena::Allocation jacobian_alloc;
+				auto scratch = allocate_workspace_and_distribute<
+					network_precision_t, // dlogitr_dmlp_out
+					network_precision_t, // dlogitg_dmlp_out
+					network_precision_t, // dlogitb_dmlp_out
+					network_precision_t, // dlogitsigma_dmlp_out
+					float, // coords_logitr_gradient
+					float, // coords_logitg_gradient
+					float, // coords_logitb_gradient
+					float // coords_logitsigma_gradient
+				>(
+					stream, &jacobian_alloc,
+					target_batch_size * padded_output_width,
+					target_batch_size * padded_output_width,
+					target_batch_size * padded_output_width,
+					target_batch_size * padded_output_width,
+					target_batch_size * floats_per_coord,
+					target_batch_size * floats_per_coord,
+					target_batch_size * floats_per_coord,
+					target_batch_size * floats_per_coord
+				);
+
+				network_precision_t* dr_dmlp_out 	      = std::get<0>(scratch);
+				network_precision_t* dg_dmlp_out 	      = std::get<1>(scratch);
+				network_precision_t* db_dmlp_out 	      = std::get<2>(scratch);
+				network_precision_t* dsigma_dmlp_out      = std::get<3>(scratch);
+				float* dlogitr_dcoords        			  = std::get<4>(scratch);
+				float* dlogitg_dcoords 			  		  = std::get<5>(scratch);
+				float* dlogitb_dcoords 			          = std::get<6>(scratch);
+				float* dlogitsigma_dcoords 		          = std::get<7>(scratch);
+
+				GPUMatrix<network_precision_t> logitr_gradient_matrix(dr_dmlp_out, padded_output_width, target_batch_size);
+				GPUMatrix<network_precision_t> logitg_gradient_matrix(dg_dmlp_out, padded_output_width, target_batch_size);
+				GPUMatrix<network_precision_t> logitb_gradient_matrix(db_dmlp_out, padded_output_width, target_batch_size);
+				GPUMatrix<network_precision_t> logitsigma_gradient_matrix(dsigma_dmlp_out, padded_output_width, target_batch_size);
+
+				GPUMatrix<float> coords_logitr_gradient_matrix((float*)dlogitr_dcoords, floats_per_coord, target_batch_size);
+				GPUMatrix<float> coords_logitg_gradient_matrix((float*)dlogitg_dcoords, floats_per_coord, target_batch_size);
+				GPUMatrix<float> coords_logitb_gradient_matrix((float*)dlogitb_dcoords, floats_per_coord, target_batch_size);
+				GPUMatrix<float> coords_logitsigma_gradient_matrix((float*)dlogitsigma_dcoords, floats_per_coord, target_batch_size);
+
+				linear_kernel(prepare_respective_rgbsimga_gradient, 0, stream,
+					target_batch_size,
+					padded_output_width,
+					LOSS_SCALE,
+					compacted_counter,
+					de_dlogits_vector, 
+					dr_dmlp_out, 
+					dg_dmlp_out, 
+					db_dmlp_out, 
+					dsigma_dmlp_out);
+
+				{
+					// auto ctx = m_network->forward(stream, compacted_coords_matrix, &compacted_rgbsigma_matrix, false, prepare_input_gradients);
+					m_network->backward(stream, *ctx, compacted_coords_matrix, compacted_rgbsigma_matrix, logitr_gradient_matrix, &coords_logitr_gradient_matrix, false, EGradientMode::Ignore);
+					m_network->backward(stream, *ctx, compacted_coords_matrix, compacted_rgbsigma_matrix, logitg_gradient_matrix, &coords_logitg_gradient_matrix, false, EGradientMode::Ignore);
+					m_network->backward(stream, *ctx, compacted_coords_matrix, compacted_rgbsigma_matrix, logitb_gradient_matrix, &coords_logitb_gradient_matrix, false, EGradientMode::Ignore);
+					m_network->backward(stream, *ctx, compacted_coords_matrix, compacted_rgbsigma_matrix, logitsigma_gradient_matrix, &coords_logitsigma_gradient_matrix, false, EGradientMode::Ignore);
+				}
+
+
+				// Then store the delta step in m_nerf.training.cam_pos_gradient_gpu.data() and m_nerf.training.cam_rot_gradient_gpu.data() 
+				linear_kernel(compute_cam_gradient_train_nerf_gauss_newton_optimizer, 0, stream,
+					n_rays_per_batch,
+					n_rays_total,
+					m_rng,
+					m_aabb,
+					ray_counter,
+					m_nerf.training.transforms_gpu.data(),
+					m_nerf.training.snap_to_pixel_centers,
+					m_nerf.training.optimize_extrinsics ? m_nerf.training.cam_pos_gradient_gpu.data() : nullptr,
+					m_nerf.training.optimize_extrinsics ? m_nerf.training.cam_rot_gradient_gpu.data() : nullptr,
+					m_nerf.training.optimize_extrinsics ? m_nerf.training.cam_pos_hessian_gpu.data() : nullptr,
+					m_nerf.training.optimize_extrinsics ? m_nerf.training.cam_rot_hessian_gpu.data() : nullptr,
+					loss_vector,
+					de_dlogits_vector,
+					m_nerf.training.n_images_for_training,
+					m_nerf.training.metadata_gpu.data(),
+					ray_indices,
+					rays_unnormalized,
+					numsteps,
+					PitchedPtr<NerfCoordinate>((NerfCoordinate*)coords_compacted, 1, 0, extra_stride),
+					PitchedPtr<NerfCoordinate>((NerfCoordinate*)dlogitr_dcoords, 1, 0, extra_stride),
+					PitchedPtr<NerfCoordinate>((NerfCoordinate*)dlogitg_dcoords, 1, 0, extra_stride),
+					PitchedPtr<NerfCoordinate>((NerfCoordinate*)dlogitb_dcoords, 1, 0, extra_stride),
+					PitchedPtr<NerfCoordinate>((NerfCoordinate*)dlogitsigma_dcoords, 1, 0, extra_stride),
+					m_nerf.training.optimize_distortion ? m_distortion.map->gradients() : nullptr,
+					m_nerf.training.optimize_distortion ? m_distortion.map->gradient_weights() : nullptr,
+					m_distortion.resolution,
+					m_nerf.training.optimize_focal_length ? m_nerf.training.cam_focal_length_gradient_gpu.data() : nullptr,
+					sample_focal_plane_proportional_to_error ? m_nerf.training.error_map.cdf_x_cond_y.data() : nullptr,
+					sample_focal_plane_proportional_to_error ? m_nerf.training.error_map.cdf_y.data() : nullptr,
+					sample_image_proportional_to_error ? m_nerf.training.error_map.cdf_img.data() : nullptr,
+					m_nerf.training.error_map.cdf_resolution,
+					PitchedPtr<NerfCoordinate>((NerfCoordinate*)coords_gradient, 1, 0, extra_stride) // debug
+				);
+
 			}
-
-
-			// Then store the delta step in m_nerf.training.cam_pos_gradient_gpu.data() and m_nerf.training.cam_rot_gradient_gpu.data() 
-			linear_kernel(compute_cam_gradient_train_nerf_gauss_newton_optimizer, 0, stream,
-				n_rays_per_batch,
-				n_rays_total,
-				m_rng,
-				m_aabb,
-				ray_counter,
-				m_nerf.training.transforms_gpu.data(),
-				m_nerf.training.snap_to_pixel_centers,
-				m_nerf.training.optimize_extrinsics ? m_nerf.training.cam_pos_gradient_gpu.data() : nullptr,
-				m_nerf.training.optimize_extrinsics ? m_nerf.training.cam_rot_gradient_gpu.data() : nullptr,
-				m_nerf.training.optimize_extrinsics ? m_nerf.training.cam_pos_hessian_gpu.data() : nullptr,
-				m_nerf.training.optimize_extrinsics ? m_nerf.training.cam_rot_hessian_gpu.data() : nullptr,
-				loss_vector,
-				de_dlogits_vector,
-				m_nerf.training.n_images_for_training,
-				m_nerf.training.metadata_gpu.data(),
-				ray_indices,
-				rays_unnormalized,
-				numsteps,
-				PitchedPtr<NerfCoordinate>((NerfCoordinate*)coords_compacted, 1, 0, extra_stride),
-				PitchedPtr<NerfCoordinate>((NerfCoordinate*)dlogitr_dcoords, 1, 0, extra_stride),
-				PitchedPtr<NerfCoordinate>((NerfCoordinate*)dlogitg_dcoords, 1, 0, extra_stride),
-				PitchedPtr<NerfCoordinate>((NerfCoordinate*)dlogitb_dcoords, 1, 0, extra_stride),
-				PitchedPtr<NerfCoordinate>((NerfCoordinate*)dlogitsigma_dcoords, 1, 0, extra_stride),
-				m_nerf.training.optimize_distortion ? m_distortion.map->gradients() : nullptr,
-				m_nerf.training.optimize_distortion ? m_distortion.map->gradient_weights() : nullptr,
-				m_distortion.resolution,
-				m_nerf.training.optimize_focal_length ? m_nerf.training.cam_focal_length_gradient_gpu.data() : nullptr,
-				sample_focal_plane_proportional_to_error ? m_nerf.training.error_map.cdf_x_cond_y.data() : nullptr,
-				sample_focal_plane_proportional_to_error ? m_nerf.training.error_map.cdf_y.data() : nullptr,
-				sample_image_proportional_to_error ? m_nerf.training.error_map.cdf_img.data() : nullptr,
-				m_nerf.training.error_map.cdf_resolution,
-				PitchedPtr<NerfCoordinate>((NerfCoordinate*)coords_gradient, 1, 0, extra_stride) // debug
-			);
-
 		}
-		
 	}
 
 	m_rng.advance();
