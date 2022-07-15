@@ -95,25 +95,21 @@ struct NerfDataset {
 	float scale = 1.0f;
 	int aabb_scale = 1;
 	bool from_mitsuba = false;
+	bool fix_premult = false;
+	bool enable_ray_loading = true;
+	bool enable_depth_loading = true;
+	float sharpen_amount;
+	CameraDistortion camera_distortion = {};
+	Eigen::Vector2f principal_point = Eigen::Vector2f::Constant(0.5f);
+	Eigen::Vector4f rolling_shutter = Eigen::Vector4f::Zero();
+	std::map<int, int> FrameId2i_img;
+
 	bool is_hdr = false;
 	bool wants_importance_sampling = true;
 	bool has_rays = false;
 
 	uint32_t n_extra_learnable_dims = 0;
 	bool has_light_dirs = false;
-
-	struct SlamInfo{
-		// Things to store for manually add images
-		bool fix_premult = false;
-		bool enable_ray_loading = true;
-		bool enable_depth_loading = true;
-		float sharpen_amount;
-		CameraDistortion camera_distortion = {};
-		Eigen::Vector2f principal_point = Eigen::Vector2f::Constant(0.5f);
-		Eigen::Vector4f rolling_shutter = Eigen::Vector4f::Zero();
-		uint32_t max_training_keyframes;
-		std::map<int, int> FrameId2img_i;
-	} slam;
 
 	uint32_t n_extra_dims() const {
 		return (has_light_dirs ? 3u : 0u) + n_extra_learnable_dims;
@@ -215,7 +211,7 @@ struct NerfDataset {
 	
 };
 
-NerfDataset load_nerfslam(const std::vector<filesystem::path>& jsonpaths, float sharpen_amount = 0.f);
+// NerfDataset load_nerfslam(const std::vector<filesystem::path>& jsonpaths, float sharpen_amount = 0.f);
 NerfDataset load_nerf(const std::vector<filesystem::path>& jsonpaths, float sharpen_amount = 0.f);
 NerfDataset create_empty_nerf_dataset(size_t n_images, int aabb_scale = 1, bool is_hdr = false);
 

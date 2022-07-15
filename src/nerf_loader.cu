@@ -301,15 +301,20 @@ NerfDataset load_nerf(const std::vector<filesystem::path>& jsonpaths, float shar
 
 	size_t image_idx = 0;
 	if (result.n_images==0) {
-		throw std::invalid_argument{"No training images were found for NeRF training!"};
+		// throw std::invalid_argument{"No training images were found for NeRF training!"};
+		tlog::warning() << "No training images were found for NeRF training (Should be using SLAM mode)!";
 	}
 
-	auto progress = tlog::progress(result.n_images);
-
 	result.from_mitsuba = false;
-	bool fix_premult = false;
-	bool enable_ray_loading = true;
-	bool enable_depth_loading = true;
+	result.fix_premult = false;
+	result.enable_ray_loading = true;
+	result.enable_depth_loading = true;
+	result.sharpen_amount = sharpen_amount;
+
+	result.camera_distortion = {};
+	result.principal_point = Vector2f::Constant(0.5f);
+	result.rolling_shutter = Vector4f::Zero();
+
 	std::atomic<int> n_loaded{0};
 	BoundingBox cam_aabb;
 	for (size_t i = 0; i < jsons.size(); ++i) {
@@ -322,12 +327,12 @@ NerfDataset load_nerf(const std::vector<filesystem::path>& jsonpaths, float shar
 		std::string part_after_underscore(jp.begin()+lastunderscore,jp.begin()+lastdot);
 
 		if (json.contains("enable_ray_loading")) {
-			enable_ray_loading = bool(json["enable_ray_loading"]);
-			tlog::info() << "enable_ray_loading=" << enable_ray_loading;
+			result.enable_ray_loading = bool(json["enable_ray_loading"]);
+			tlog::info() << "enable_ray_loading=" << result.enable_ray_loading;
 		}
 		if (json.contains("enable_depth_loading")) {
-			enable_depth_loading = bool(json["enable_depth_loading"]);
-			tlog::info() << "enable_depth_loading is " << enable_depth_loading;
+			result.enable_depth_loading = bool(json["enable_depth_loading"]);
+			tlog::info() << "enable_depth_loading is " << result.enable_depth_loading;
 		}
 
 		if (json.contains("normal_mts_args")) {
@@ -335,7 +340,7 @@ NerfDataset load_nerf(const std::vector<filesystem::path>& jsonpaths, float shar
 		}
 
 		if (json.contains("fix_premult")) {
-			fix_premult = (bool)json["fix_premult"];
+			result.fix_premult = (bool)json["fix_premult"];
 		}
 
 		if (result.from_mitsuba) {
@@ -349,7 +354,7 @@ NerfDataset load_nerf(const std::vector<filesystem::path>& jsonpaths, float shar
 		}
 
 		if (json.contains("sharpen")) {
-			sharpen_amount = json["sharpen"];
+			result.sharpen_amount = json["sharpen"];
 		}
 
 		if (json.contains("white_transparent")) {
@@ -372,10 +377,6 @@ NerfDataset load_nerf(const std::vector<filesystem::path>& jsonpaths, float shar
 			result.n_extra_learnable_dims = json["n_extra_learnable_dims"];
 		}
 
-		CameraDistortion camera_distortion = {};
-		Vector2f principal_point = Vector2f::Constant(0.5f);
-		Vector4f rolling_shutter = Vector4f::Zero();
-
 		if (json.contains("integer_depth_scale")) {
 			info.depth_scale = json["integer_depth_scale"];
 		}
@@ -383,39 +384,39 @@ NerfDataset load_nerf(const std::vector<filesystem::path>& jsonpaths, float shar
 		// Camera distortion
 		{
 			if (json.contains("k1")) {
-				camera_distortion.params[0] = json["k1"];
-				if (camera_distortion.params[0] != 0.f) {
-					camera_distortion.mode = ECameraDistortionMode::Iterative;
+				result.camera_distortion.params[0] = json["k1"];
+				if (result.camera_distortion.params[0] != 0.f) {
+					result.camera_distortion.mode = ECameraDistortionMode::Iterative;
 				}
 			}
 
 			if (json.contains("k2")) {
-				camera_distortion.params[1] = json["k2"];
-				if (camera_distortion.params[1] != 0.f) {
-					camera_distortion.mode = ECameraDistortionMode::Iterative;
+				result.camera_distortion.params[1] = json["k2"];
+				if (result.camera_distortion.params[1] != 0.f) {
+					result.camera_distortion.mode = ECameraDistortionMode::Iterative;
 				}
 			}
 
 			if (json.contains("p1")) {
-				camera_distortion.params[2] = json["p1"];
-				if (camera_distortion.params[2] != 0.f) {
-					camera_distortion.mode = ECameraDistortionMode::Iterative;
+				result.camera_distortion.params[2] = json["p1"];
+				if (result.camera_distortion.params[2] != 0.f) {
+					result.camera_distortion.mode = ECameraDistortionMode::Iterative;
 				}
 			}
 
 			if (json.contains("p2")) {
-				camera_distortion.params[3] = json["p2"];
-				if (camera_distortion.params[3] != 0.f) {
-					camera_distortion.mode = ECameraDistortionMode::Iterative;
+				result.camera_distortion.params[3] = json["p2"];
+				if (result.camera_distortion.params[3] != 0.f) {
+					result.camera_distortion.mode = ECameraDistortionMode::Iterative;
 				}
 			}
 
 			if (json.contains("cx")) {
-				principal_point.x() = (float)json["cx"] / (float)json["w"];
+				result.principal_point.x() = (float)json["cx"] / (float)json["w"];
 			}
 
 			if (json.contains("cy")) {
-				principal_point.y() = (float)json["cy"] / (float)json["h"];
+				result.principal_point.y() = (float)json["cy"] / (float)json["h"];
 			}
 
 			if (json.contains("rolling_shutter")) {
@@ -429,18 +430,18 @@ NerfDataset load_nerf(const std::vector<filesystem::path>& jsonpaths, float shar
 					motionblur_amount = float(json["rolling_shutter"][3]);
 				}
 
-				rolling_shutter = {float(json["rolling_shutter"][0]), float(json["rolling_shutter"][1]), float(json["rolling_shutter"][2]), motionblur_amount};
+				result.rolling_shutter = {float(json["rolling_shutter"][0]), float(json["rolling_shutter"][1]), float(json["rolling_shutter"][2]), motionblur_amount};
 			}
 
 			if (json.contains("ftheta_p0")) {
-				camera_distortion.params[0] = json["ftheta_p0"];
-				camera_distortion.params[1] = json["ftheta_p1"];
-				camera_distortion.params[2] = json["ftheta_p2"];
-				camera_distortion.params[3] = json["ftheta_p3"];
-				camera_distortion.params[4] = json["ftheta_p4"];
-				camera_distortion.params[5] = json["w"];
-				camera_distortion.params[6] = json["h"];
-				camera_distortion.mode = ECameraDistortionMode::FTheta;
+				result.camera_distortion.params[0] = json["ftheta_p0"];
+				result.camera_distortion.params[1] = json["ftheta_p1"];
+				result.camera_distortion.params[2] = json["ftheta_p2"];
+				result.camera_distortion.params[3] = json["ftheta_p3"];
+				result.camera_distortion.params[4] = json["ftheta_p4"];
+				result.camera_distortion.params[5] = json["w"];
+				result.camera_distortion.params[6] = json["h"];
+				result.camera_distortion.mode = ECameraDistortionMode::FTheta;
 			}
 		}
 
@@ -497,191 +498,203 @@ NerfDataset load_nerf(const std::vector<filesystem::path>& jsonpaths, float shar
 			}
 		}
 
-		if (json.contains("frames") && json["frames"].is_array()) pool.parallelForAsync<size_t>(0, json["frames"].size(), [&, basepath, image_idx, info](size_t i) {
-			size_t i_img = i + image_idx;
-			auto& frame = json["frames"][i];
-			LoadedImageInfo& dst = images[i_img];
-			dst = info; // copy defaults
+		if (result.n_images > 0 ) 
+		{
+			auto progress = tlog::progress(result.n_images);
 
-			std::string json_provided_path(frame["file_path"]);
-			if (json_provided_path == "") {
-				char buf[256];
-				snprintf(buf, 256, "%s_%03d/rgba.png", part_after_underscore.c_str(), (int)i);
-				json_provided_path = buf;
-			}
-			fs::path path = basepath / json_provided_path;
+			if (json.contains("frames") && json["frames"].is_array()) pool.parallelForAsync<size_t>(0, json["frames"].size(), [&, basepath, image_idx, info](size_t i) {
+				size_t i_img = i + image_idx;
+				auto& frame = json["frames"][i];
+				LoadedImageInfo& dst = images[i_img];
+				dst = info; // copy defaults
 
-			if (path.extension() == "") {
-				path = path.with_extension("png");
-				if (!path.exists()) {
-					path = path.with_extension("exr");
+				std::string json_provided_path(frame["file_path"]);
+				if (json_provided_path == "") {
+					char buf[256];
+					snprintf(buf, 256, "%s_%03d/rgba.png", part_after_underscore.c_str(), (int)i);
+					json_provided_path = buf;
 				}
-				if (!path.exists()) {
-					throw std::runtime_error{ "Could not find image file: " + path.str()};
-				}
-			}
+				fs::path path = basepath / json_provided_path;
 
-			int comp = 0;
-			if (equals_case_insensitive(path.extension(), "exr")) {
-				dst.pixels = load_exr_to_gpu(&dst.res.x(), &dst.res.y(), path.str().c_str(), fix_premult);
-				dst.image_type = EImageDataType::Half;
-				dst.image_data_on_gpu = true;
-				result.is_hdr = true;
-			} else {
-				dst.image_data_on_gpu = false;
-				uint8_t* img = stbi_load(path.str().c_str(), &dst.res.x(), &dst.res.y(), &comp, 4);
-
-
-				fs::path alphapath = basepath / (std::string{frame["file_path"]} + ".alpha."s + path.extension());
-				if (alphapath.exists()) {
-					int wa=0,ha=0;
-					uint8_t* alpha_img = stbi_load(alphapath.str().c_str(), &wa, &ha, &comp, 4);
-					if (!alpha_img) {
-						throw std::runtime_error{"Could not load alpha image "s + alphapath.str()};
+				if (path.extension() == "") {
+					path = path.with_extension("png");
+					if (!path.exists()) {
+						path = path.with_extension("exr");
 					}
-					ScopeGuard mem_guard{[&]() { stbi_image_free(alpha_img); }};
-					if (wa != dst.res.x() || ha != dst.res.y()) {
-						throw std::runtime_error{std::string{"Alpha image has wrong resolution: "} + alphapath.str()};
-					}
-					tlog::success() << "Alpha loaded from " << alphapath;
-					for (int i=0;i<dst.res.prod();++i) {
-						img[i*4+3] = uint8_t(255.0f*srgb_to_linear(alpha_img[i*4]*(1.f/255.f))); // copy red channel of alpha to alpha.png to our alpha channel
+					if (!path.exists()) {
+						throw std::runtime_error{ "Could not find image file: " + path.str()};
 					}
 				}
 
-				fs::path maskpath = path.parent_path()/(std::string{"dynamic_mask_"} + path.basename() + ".png");
-				if (maskpath.exists()) {
-					int wa=0,ha=0;
-					uint8_t* mask_img = stbi_load(maskpath.str().c_str(), &wa, &ha, &comp, 4);
-					if (!mask_img) {
-						throw std::runtime_error{std::string{"Could not load mask image "} + maskpath.str()};
-					}
-					ScopeGuard mem_guard{[&]() { stbi_image_free(mask_img); }};
-					if (wa != dst.res.x() || ha != dst.res.y()) {
-						throw std::runtime_error{std::string{"Mask image has wrong resolution: "} + maskpath.str()};
-					}
-					dst.mask_color = 0x00FF00FF; // HOT PINK
-					for (int i = 0; i < dst.res.prod(); ++i) {
-						if (mask_img[i*4] != 0) {
-							*(uint32_t*)&img[i*4] = dst.mask_color;
+				int comp = 0;
+				if (equals_case_insensitive(path.extension(), "exr")) {
+					dst.pixels = load_exr_to_gpu(&dst.res.x(), &dst.res.y(), path.str().c_str(), result.fix_premult);
+					dst.image_type = EImageDataType::Half;
+					dst.image_data_on_gpu = true;
+					result.is_hdr = true;
+				} else {
+					dst.image_data_on_gpu = false;
+					uint8_t* img = stbi_load(path.str().c_str(), &dst.res.x(), &dst.res.y(), &comp, 4);
+
+
+					fs::path alphapath = basepath / (std::string{frame["file_path"]} + ".alpha."s + path.extension());
+					if (alphapath.exists()) {
+						int wa=0,ha=0;
+						uint8_t* alpha_img = stbi_load(alphapath.str().c_str(), &wa, &ha, &comp, 4);
+						if (!alpha_img) {
+							throw std::runtime_error{"Could not load alpha image "s + alphapath.str()};
+						}
+						ScopeGuard mem_guard{[&]() { stbi_image_free(alpha_img); }};
+						if (wa != dst.res.x() || ha != dst.res.y()) {
+							throw std::runtime_error{std::string{"Alpha image has wrong resolution: "} + alphapath.str()};
+						}
+						tlog::success() << "Alpha loaded from " << alphapath;
+						for (int i=0;i<dst.res.prod();++i) {
+							img[i*4+3] = uint8_t(255.0f*srgb_to_linear(alpha_img[i*4]*(1.f/255.f))); // copy red channel of alpha to alpha.png to our alpha channel
 						}
 					}
-				}
 
-				dst.pixels = img;
-				dst.image_type = EImageDataType::Byte;
-			}
-
-			if (!dst.pixels) {
-				throw std::runtime_error{ "image not found: " + path.str() };
-			}
-
-			if (enable_depth_loading && info.depth_scale > 0.f && frame.contains("depth_path")) {
-				fs::path depthpath = basepath / std::string{frame["depth_path"]};
-				if (depthpath.exists()) {
-					int wa=0,ha=0;
-					dst.depth_pixels = stbi_load_16(depthpath.str().c_str(), &wa, &ha, &comp, 1);
-					if (!dst.depth_pixels) {
-						throw std::runtime_error{"Could not load depth image "s + depthpath.str()};
+					fs::path maskpath = path.parent_path()/(std::string{"dynamic_mask_"} + path.basename() + ".png");
+					if (maskpath.exists()) {
+						int wa=0,ha=0;
+						uint8_t* mask_img = stbi_load(maskpath.str().c_str(), &wa, &ha, &comp, 4);
+						if (!mask_img) {
+							throw std::runtime_error{std::string{"Could not load mask image "} + maskpath.str()};
+						}
+						ScopeGuard mem_guard{[&]() { stbi_image_free(mask_img); }};
+						if (wa != dst.res.x() || ha != dst.res.y()) {
+							throw std::runtime_error{std::string{"Mask image has wrong resolution: "} + maskpath.str()};
+						}
+						dst.mask_color = 0x00FF00FF; // HOT PINK
+						for (int i = 0; i < dst.res.prod(); ++i) {
+							if (mask_img[i*4] != 0) {
+								*(uint32_t*)&img[i*4] = dst.mask_color;
+							}
+						}
 					}
-					if (wa != dst.res.x() || ha != dst.res.y()) {
-						throw std::runtime_error{std::string{"Depth image has wrong resolution: "} + depthpath.str()};
+
+					dst.pixels = img;
+					dst.image_type = EImageDataType::Byte;
+				}
+
+				if (!dst.pixels) {
+					throw std::runtime_error{ "image not found: " + path.str() };
+				}
+
+				if (frame.contains("Id")){
+					int Id = frame["Id"];
+					result.FrameId2i_img[Id] = i_img;
+				}
+
+				if (result.enable_depth_loading && info.depth_scale > 0.f && frame.contains("depth_path")) {
+					fs::path depthpath = basepath / std::string{frame["depth_path"]};
+					if (depthpath.exists()) {
+						int wa=0,ha=0;
+						dst.depth_pixels = stbi_load_16(depthpath.str().c_str(), &wa, &ha, &comp, 1);
+						if (!dst.depth_pixels) {
+							throw std::runtime_error{"Could not load depth image "s + depthpath.str()};
+						}
+						if (wa != dst.res.x() || ha != dst.res.y()) {
+							throw std::runtime_error{std::string{"Depth image has wrong resolution: "} + depthpath.str()};
+						}
+						tlog::success() << "Depth loaded from " << depthpath;
 					}
-					tlog::success() << "Depth loaded from " << depthpath;
-				}
-			}
-
-			fs::path rayspath = path.parent_path()/(std::string{"rays_"} + path.basename() + ".dat");
-			if (enable_ray_loading && rayspath.exists()) {
-				uint32_t n_pixels = dst.res.prod();
-				dst.rays = (Ray*)malloc(n_pixels * sizeof(Ray));
-
-				std::ifstream rays_file{rayspath.str(), std::ios::binary};
-				rays_file.read((char*)dst.rays, n_pixels * sizeof(Ray));
-
-				std::streampos fsize = 0;
-				fsize = rays_file.tellg();
-				rays_file.seekg(0, std::ios::end);
-				fsize = rays_file.tellg() - fsize;
-
-				if (fsize > 0) {
-					tlog::warning() << fsize << " bytes remaining in rays file " << rayspath;
 				}
 
-				for (uint32_t px = 0; px < n_pixels; ++px) {
-					result.nerf_ray_to_ngp(dst.rays[px]);
+				fs::path rayspath = path.parent_path()/(std::string{"rays_"} + path.basename() + ".dat");
+				if (result.enable_ray_loading && rayspath.exists()) {
+					uint32_t n_pixels = dst.res.prod();
+					dst.rays = (Ray*)malloc(n_pixels * sizeof(Ray));
+
+					std::ifstream rays_file{rayspath.str(), std::ios::binary};
+					rays_file.read((char*)dst.rays, n_pixels * sizeof(Ray));
+
+					std::streampos fsize = 0;
+					fsize = rays_file.tellg();
+					rays_file.seekg(0, std::ios::end);
+					fsize = rays_file.tellg() - fsize;
+
+					if (fsize > 0) {
+						tlog::warning() << fsize << " bytes remaining in rays file " << rayspath;
+					}
+
+					for (uint32_t px = 0; px < n_pixels; ++px) {
+						result.nerf_ray_to_ngp(dst.rays[px]);
+					}
+					result.has_rays = true;
 				}
-				result.has_rays = true;
-			}
 
-			nlohmann::json& jsonmatrix_start = frame.contains("transform_matrix_start") ? frame["transform_matrix_start"] : frame["transform_matrix"];
-			nlohmann::json& jsonmatrix_end =   frame.contains("transform_matrix_end") ? frame["transform_matrix_end"] : jsonmatrix_start;
+				nlohmann::json& jsonmatrix_start = frame.contains("transform_matrix_start") ? frame["transform_matrix_start"] : frame["transform_matrix"];
+				nlohmann::json& jsonmatrix_end =   frame.contains("transform_matrix_end") ? frame["transform_matrix_end"] : jsonmatrix_start;
 
-			if (frame.contains("driver_parameters")) {
-				Eigen::Vector3f light_dir(
-					frame["driver_parameters"].value("LightX", 0.f),
-					frame["driver_parameters"].value("LightY", 0.f),
-					frame["driver_parameters"].value("LightZ", 0.f)
-				);
-				result.metadata[i_img].light_dir = result.nerf_direction_to_ngp(light_dir.normalized());
-				result.has_light_dirs = true;
-				result.n_extra_learnable_dims = 0;
-			}
+				if (frame.contains("driver_parameters")) {
+					Eigen::Vector3f light_dir(
+						frame["driver_parameters"].value("LightX", 0.f),
+						frame["driver_parameters"].value("LightY", 0.f),
+						frame["driver_parameters"].value("LightZ", 0.f)
+					);
+					result.metadata[i_img].light_dir = result.nerf_direction_to_ngp(light_dir.normalized());
+					result.has_light_dirs = true;
+					result.n_extra_learnable_dims = 0;
+				}
 
-			auto read_focal_length = [&](int resolution, const std::string& axis) {
-				if (frame.contains(axis + "_fov")) {
-					return fov_to_focal_length(resolution, (float)frame[axis + "_fov"]);
-				} else if (json.contains("fl_"s + axis)) {
-					return (float)json["fl_"s + axis];
-				} else if (json.contains("camera_angle_"s + axis)) {
-					return fov_to_focal_length(resolution, (float)json["camera_angle_"s + axis] * 180 / PI());
+				auto read_focal_length = [&](int resolution, const std::string& axis) {
+					if (frame.contains(axis + "_fov")) {
+						return fov_to_focal_length(resolution, (float)frame[axis + "_fov"]);
+					} else if (json.contains("fl_"s + axis)) {
+						return (float)json["fl_"s + axis];
+					} else if (json.contains("camera_angle_"s + axis)) {
+						return fov_to_focal_length(resolution, (float)json["camera_angle_"s + axis] * 180 / PI());
+					} else {
+						return 0.0f;
+					}
+				};
+
+				// x_fov is in degrees, camera_angle_x in radians. Yes, it's silly.
+				float x_fl = read_focal_length(dst.res.x(), "x");
+				float y_fl = read_focal_length(dst.res.y(), "y");
+
+				if (x_fl != 0) {
+					result.metadata[i_img].focal_length = Vector2f::Constant(x_fl);
+					if (y_fl != 0) {
+						result.metadata[i_img].focal_length.y() = y_fl;
+					}
+				} else if (y_fl != 0) {
+					result.metadata[i_img].focal_length = Vector2f::Constant(y_fl);
 				} else {
-					return 0.0f;
+					throw std::runtime_error{"Couldn't read fov."};
 				}
-			};
 
-			// x_fov is in degrees, camera_angle_x in radians. Yes, it's silly.
-			float x_fl = read_focal_length(dst.res.x(), "x");
-			float y_fl = read_focal_length(dst.res.y(), "y");
-
-			if (x_fl != 0) {
-				result.metadata[i_img].focal_length = Vector2f::Constant(x_fl);
-				if (y_fl != 0) {
-					result.metadata[i_img].focal_length.y() = y_fl;
+				for (int m = 0; m < 3; ++m) {
+					for (int n = 0; n < 4; ++n) {
+						result.xforms[i_img].start(m, n) = float(jsonmatrix_start[m][n]);
+						result.xforms[i_img].end(m, n) = float(jsonmatrix_end[m][n]);
+					}
 				}
-			} else if (y_fl != 0) {
-				result.metadata[i_img].focal_length = Vector2f::Constant(y_fl);
-			} else {
-				throw std::runtime_error{"Couldn't read fov."};
+
+				result.metadata[i_img].rolling_shutter = result.rolling_shutter;
+				result.metadata[i_img].principal_point = result.principal_point;
+				result.metadata[i_img].camera_distortion = result.camera_distortion;
+
+				result.xforms[i_img].start = result.nerf_matrix_to_ngp(result.xforms[i_img].start);
+				result.xforms[i_img].end = result.nerf_matrix_to_ngp(result.xforms[i_img].end);
+
+				progress.update(++n_loaded);
+			}, futures);
+
+			if (json.contains("frames")) {
+				image_idx += json["frames"].size();
 			}
 
-			for (int m = 0; m < 3; ++m) {
-				for (int n = 0; n < 4; ++n) {
-					result.xforms[i_img].start(m, n) = float(jsonmatrix_start[m][n]);
-					result.xforms[i_img].end(m, n) = float(jsonmatrix_end[m][n]);
-				}
-			}
+			waitAll(futures);
 
-			result.metadata[i_img].rolling_shutter = rolling_shutter;
-			result.metadata[i_img].principal_point = principal_point;
-			result.metadata[i_img].camera_distortion = camera_distortion;
-
-			result.xforms[i_img].start = result.nerf_matrix_to_ngp(result.xforms[i_img].start);
-			result.xforms[i_img].end = result.nerf_matrix_to_ngp(result.xforms[i_img].end);
-
-			progress.update(++n_loaded);
-		}, futures);
-
-		if (json.contains("frames")) {
-			image_idx += json["frames"].size();
+			tlog::success() << "Loaded " << images.size() << " images after " << tlog::durationToString(progress.duration());
+			tlog::info() << "  cam_aabb=" << cam_aabb;
 		}
 
 	}
 
-	waitAll(futures);
-
-	tlog::success() << "Loaded " << images.size() << " images after " << tlog::durationToString(progress.duration());
-	tlog::info() << "  cam_aabb=" << cam_aabb;
+	
 
 	if (result.has_rays) {
 		tlog::success() << "Loaded per-pixel rays.";
@@ -713,251 +726,251 @@ NerfDataset load_nerf(const std::vector<filesystem::path>& jsonpaths, float shar
 	return result;
 }
 
-NerfDataset load_nerfslam(const std::vector<filesystem::path>& jsonpaths, float sharpen_amount) {
-	if (jsonpaths.empty()) {
-		throw std::runtime_error{"Cannot load NeRF data from an empty set of paths."};
-	}
+// NerfDataset load_nerfslam(const std::vector<filesystem::path>& jsonpaths, float sharpen_amount) {
+// 	if (jsonpaths.empty()) {
+// 		throw std::runtime_error{"Cannot load NeRF data from an empty set of paths."};
+// 	}
 
-	tlog::info() << "Loading NeRF dataset from";
+// 	tlog::info() << "Loading NeRF dataset from";
 
-	NerfDataset result{};
+// 	NerfDataset result{};
 
-	std::ifstream f{jsonpaths.front().str()};
-	nlohmann::json transforms = nlohmann::json::parse(f, nullptr, true, true);
+// 	std::ifstream f{jsonpaths.front().str()};
+// 	nlohmann::json transforms = nlohmann::json::parse(f, nullptr, true, true);
 
-	ThreadPool pool;
+// 	ThreadPool pool;
 
-	if (transforms["camera"].is_array()) {
-		throw std::runtime_error{"hdf5 is no longer supported. please use the hdf52nerf.py conversion script"};
-	}
+// 	if (transforms["camera"].is_array()) {
+// 		throw std::runtime_error{"hdf5 is no longer supported. please use the hdf52nerf.py conversion script"};
+// 	}
 
-	// nerf original format
-	std::vector<nlohmann::json> jsons;
-	std::transform(
-		jsonpaths.begin(), jsonpaths.end(),
-		std::back_inserter(jsons), [](const auto& path) {
-			return nlohmann::json::parse(std::ifstream{path.str()}, nullptr, true, true);
-		}
-	);
+// 	// nerf original format
+// 	std::vector<nlohmann::json> jsons;
+// 	std::transform(
+// 		jsonpaths.begin(), jsonpaths.end(),
+// 		std::back_inserter(jsons), [](const auto& path) {
+// 			return nlohmann::json::parse(std::ifstream{path.str()}, nullptr, true, true);
+// 		}
+// 	);
 
-	result.scale = NERF_SCALE;
-	// modify this
-	result.offset = {0.5f, 0.5f, 0.5f};
+// 	result.scale = NERF_SCALE;
+// 	// modify this
+// 	result.offset = {0.5f, 0.5f, 0.5f};
 
-	result.from_mitsuba = false;
-	result.slam.fix_premult = false;
-	result.slam.enable_ray_loading = true;
-	result.slam.enable_depth_loading = true;
-	result.slam.sharpen_amount = sharpen_amount;
+// 	result.from_mitsuba = false;
+// 	result.slam.fix_premult = false;
+// 	result.slam.enable_ray_loading = true;
+// 	result.slam.enable_depth_loading = true;
+// 	result.slam.sharpen_amount = sharpen_amount;
 
-	BoundingBox cam_aabb;
-	for (size_t i = 0; i < jsons.size(); ++i) {
-		auto& json = jsons[i];
+// 	BoundingBox cam_aabb;
+// 	for (size_t i = 0; i < jsons.size(); ++i) {
+// 		auto& json = jsons[i];
 
-		fs::path basepath = jsonpaths[i].parent_path();
-		std::string jp = jsonpaths[i].str();
-		auto lastdot=jp.find_last_of('.'); if (lastdot==std::string::npos) lastdot=jp.length();
-		auto lastunderscore=jp.find_last_of('_'); if (lastunderscore==std::string::npos) lastunderscore=lastdot; else lastunderscore++;
-		std::string part_after_underscore(jp.begin()+lastunderscore,jp.begin()+lastdot);
+// 		fs::path basepath = jsonpaths[i].parent_path();
+// 		std::string jp = jsonpaths[i].str();
+// 		auto lastdot=jp.find_last_of('.'); if (lastdot==std::string::npos) lastdot=jp.length();
+// 		auto lastunderscore=jp.find_last_of('_'); if (lastunderscore==std::string::npos) lastunderscore=lastdot; else lastunderscore++;
+// 		std::string part_after_underscore(jp.begin()+lastunderscore,jp.begin()+lastdot);
 
-		if (json.contains("enable_ray_loading")) {
-			result.slam.enable_ray_loading = bool(json["enable_ray_loading"]);
-			tlog::info() << "enable_ray_loading=" << result.slam.enable_ray_loading;
-		}
-		if (json.contains("enable_depth_loading")) {
-			result.slam.enable_depth_loading = bool(json["enable_depth_loading"]);
-			tlog::info() << "enable_depth_loading is " << result.slam.enable_depth_loading;
-		}
+// 		if (json.contains("enable_ray_loading")) {
+// 			result.slam.enable_ray_loading = bool(json["enable_ray_loading"]);
+// 			tlog::info() << "enable_ray_loading=" << result.slam.enable_ray_loading;
+// 		}
+// 		if (json.contains("enable_depth_loading")) {
+// 			result.slam.enable_depth_loading = bool(json["enable_depth_loading"]);
+// 			tlog::info() << "enable_depth_loading is " << result.slam.enable_depth_loading;
+// 		}
 
-		if (json.contains("normal_mts_args")) {
-			result.from_mitsuba = true;
-		}
+// 		if (json.contains("normal_mts_args")) {
+// 			result.from_mitsuba = true;
+// 		}
 
-		if (json.contains("fix_premult")) {
-			result.slam.fix_premult = (bool)json["fix_premult"];
-		}
+// 		if (json.contains("fix_premult")) {
+// 			result.slam.fix_premult = (bool)json["fix_premult"];
+// 		}
 
-		if (result.from_mitsuba) {
-			result.scale = 0.66f;
-			result.offset = {0.25f * result.scale, 0.25f * result.scale, 0.25f * result.scale};
-		}
+// 		if (result.from_mitsuba) {
+// 			result.scale = 0.66f;
+// 			result.offset = {0.25f * result.scale, 0.25f * result.scale, 0.25f * result.scale};
+// 		}
 
-		if (json.contains("render_aabb")) {
-			result.render_aabb.min={float(json["render_aabb"][0][0]),float(json["render_aabb"][0][1]),float(json["render_aabb"][0][2])};
-			result.render_aabb.max={float(json["render_aabb"][1][0]),float(json["render_aabb"][1][1]),float(json["render_aabb"][1][2])};
-		}
+// 		if (json.contains("render_aabb")) {
+// 			result.render_aabb.min={float(json["render_aabb"][0][0]),float(json["render_aabb"][0][1]),float(json["render_aabb"][0][2])};
+// 			result.render_aabb.max={float(json["render_aabb"][1][0]),float(json["render_aabb"][1][1]),float(json["render_aabb"][1][2])};
+// 		}
 
-		if (json.contains("sharpen")) {
-			result.slam.sharpen_amount = json["sharpen"];
-		}
+// 		if (json.contains("sharpen")) {
+// 			result.slam.sharpen_amount = json["sharpen"];
+// 		}
 
-		if (json.contains("white_transparent")) {
-			result.info.white_transparent = bool(json["white_transparent"]);
-		}
+// 		if (json.contains("white_transparent")) {
+// 			result.info.white_transparent = bool(json["white_transparent"]);
+// 		}
 
-		if (json.contains("black_transparent")) {
-			result.info.black_transparent = bool(json["black_transparent"]);
-		}
+// 		if (json.contains("black_transparent")) {
+// 			result.info.black_transparent = bool(json["black_transparent"]);
+// 		}
 
-		if (json.contains("scale")) {
-			result.scale = json["scale"];
-		}
+// 		if (json.contains("scale")) {
+// 			result.scale = json["scale"];
+// 		}
 
-		if (json.contains("importance_sampling")) {
-			result.wants_importance_sampling = json["importance_sampling"];
-		}
+// 		if (json.contains("importance_sampling")) {
+// 			result.wants_importance_sampling = json["importance_sampling"];
+// 		}
 
-		if (json.contains("n_extra_learnable_dims")) {
-			result.n_extra_learnable_dims = json["n_extra_learnable_dims"];
-		}
+// 		if (json.contains("n_extra_learnable_dims")) {
+// 			result.n_extra_learnable_dims = json["n_extra_learnable_dims"];
+// 		}
 
-		// CameraDistortion camera_distortion = {};
-		// Vector2f principal_point = Vector2f::Constant(0.5f);
-		// Vector4f rolling_shutter = Vector4f::Zero();
+// 		// CameraDistortion camera_distortion = {};
+// 		// Vector2f principal_point = Vector2f::Constant(0.5f);
+// 		// Vector4f rolling_shutter = Vector4f::Zero();
 
-		if (json.contains("integer_depth_scale")) {
-			result.info.depth_scale = json["integer_depth_scale"];
-		}
+// 		if (json.contains("integer_depth_scale")) {
+// 			result.info.depth_scale = json["integer_depth_scale"];
+// 		}
 
-		// Camera distortion
-		{
-			if (json.contains("k1")) {
-				result.slam.camera_distortion.params[0] = json["k1"];
-				if (result.slam.camera_distortion.params[0] != 0.f) {
-					result.slam.camera_distortion.mode = ECameraDistortionMode::Iterative;
-				}
-			}
+// 		// Camera distortion
+// 		{
+// 			if (json.contains("k1")) {
+// 				result.slam.camera_distortion.params[0] = json["k1"];
+// 				if (result.slam.camera_distortion.params[0] != 0.f) {
+// 					result.slam.camera_distortion.mode = ECameraDistortionMode::Iterative;
+// 				}
+// 			}
 
-			if (json.contains("k2")) {
-				result.slam.camera_distortion.params[1] = json["k2"];
-				if (result.slam.camera_distortion.params[1] != 0.f) {
-					result.slam.camera_distortion.mode = ECameraDistortionMode::Iterative;
-				}
-			}
+// 			if (json.contains("k2")) {
+// 				result.slam.camera_distortion.params[1] = json["k2"];
+// 				if (result.slam.camera_distortion.params[1] != 0.f) {
+// 					result.slam.camera_distortion.mode = ECameraDistortionMode::Iterative;
+// 				}
+// 			}
 
-			if (json.contains("p1")) {
-				result.slam.camera_distortion.params[2] = json["p1"];
-				if (result.slam.camera_distortion.params[2] != 0.f) {
-					result.slam.camera_distortion.mode = ECameraDistortionMode::Iterative;
-				}
-			}
+// 			if (json.contains("p1")) {
+// 				result.slam.camera_distortion.params[2] = json["p1"];
+// 				if (result.slam.camera_distortion.params[2] != 0.f) {
+// 					result.slam.camera_distortion.mode = ECameraDistortionMode::Iterative;
+// 				}
+// 			}
 
-			if (json.contains("p2")) {
-				result.slam.camera_distortion.params[3] = json["p2"];
-				if (result.slam.camera_distortion.params[3] != 0.f) {
-					result.slam.camera_distortion.mode = ECameraDistortionMode::Iterative;
-				}
-			}
+// 			if (json.contains("p2")) {
+// 				result.slam.camera_distortion.params[3] = json["p2"];
+// 				if (result.slam.camera_distortion.params[3] != 0.f) {
+// 					result.slam.camera_distortion.mode = ECameraDistortionMode::Iterative;
+// 				}
+// 			}
 
-			if (json.contains("cx")) {
-				result.slam.principal_point.x() = (float)json["cx"] / (float)json["w"];
-			}
+// 			if (json.contains("cx")) {
+// 				result.slam.principal_point.x() = (float)json["cx"] / (float)json["w"];
+// 			}
 
-			if (json.contains("cy")) {
-				result.slam.principal_point.y() = (float)json["cy"] / (float)json["h"];
-			}
+// 			if (json.contains("cy")) {
+// 				result.slam.principal_point.y() = (float)json["cy"] / (float)json["h"];
+// 			}
 
-			if (json.contains("rolling_shutter")) {
-				// the rolling shutter is a float3 of [A,B,C] where the time
-				// for each pixel is t= A + B * u + C * v
-				// where u and v are the pixel coordinates (0-1),
-				// and the resulting t is used to interpolate between the start
-				// and end transforms for each training xform
-				float motionblur_amount = 0.f;
-				if (json["rolling_shutter"].size() >= 4) {
-					motionblur_amount = float(json["rolling_shutter"][3]);
-				}
+// 			if (json.contains("rolling_shutter")) {
+// 				// the rolling shutter is a float3 of [A,B,C] where the time
+// 				// for each pixel is t= A + B * u + C * v
+// 				// where u and v are the pixel coordinates (0-1),
+// 				// and the resulting t is used to interpolate between the start
+// 				// and end transforms for each training xform
+// 				float motionblur_amount = 0.f;
+// 				if (json["rolling_shutter"].size() >= 4) {
+// 					motionblur_amount = float(json["rolling_shutter"][3]);
+// 				}
 
-				result.slam.rolling_shutter = {float(json["rolling_shutter"][0]), float(json["rolling_shutter"][1]), float(json["rolling_shutter"][2]), motionblur_amount};
-			}
+// 				result.slam.rolling_shutter = {float(json["rolling_shutter"][0]), float(json["rolling_shutter"][1]), float(json["rolling_shutter"][2]), motionblur_amount};
+// 			}
 
-			if (json.contains("ftheta_p0")) {
-				result.slam.camera_distortion.params[0] = json["ftheta_p0"];
-				result.slam.camera_distortion.params[1] = json["ftheta_p1"];
-				result.slam.camera_distortion.params[2] = json["ftheta_p2"];
-				result.slam.camera_distortion.params[3] = json["ftheta_p3"];
-				result.slam.camera_distortion.params[4] = json["ftheta_p4"];
-				result.slam.camera_distortion.params[5] = json["w"];
-				result.slam.camera_distortion.params[6] = json["h"];
-				result.slam.camera_distortion.mode = ECameraDistortionMode::FTheta;
-			}
-		}
+// 			if (json.contains("ftheta_p0")) {
+// 				result.slam.camera_distortion.params[0] = json["ftheta_p0"];
+// 				result.slam.camera_distortion.params[1] = json["ftheta_p1"];
+// 				result.slam.camera_distortion.params[2] = json["ftheta_p2"];
+// 				result.slam.camera_distortion.params[3] = json["ftheta_p3"];
+// 				result.slam.camera_distortion.params[4] = json["ftheta_p4"];
+// 				result.slam.camera_distortion.params[5] = json["w"];
+// 				result.slam.camera_distortion.params[6] = json["h"];
+// 				result.slam.camera_distortion.mode = ECameraDistortionMode::FTheta;
+// 			}
+// 		}
 
-		if (json.contains("aabb_scale")) {
-			result.aabb_scale = json["aabb_scale"];
-		}
+// 		if (json.contains("aabb_scale")) {
+// 			result.aabb_scale = json["aabb_scale"];
+// 		}
 
-		if (json.contains("offset")) {
-			result.offset =
-				json["offset"].is_array() ?
-				Vector3f{float(json["offset"][0]), float(json["offset"][1]), float(json["offset"][2])} :
-				Vector3f{float(json["offset"]), float(json["offset"]), float(json["offset"])};
-		}
+// 		if (json.contains("offset")) {
+// 			result.offset =
+// 				json["offset"].is_array() ?
+// 				Vector3f{float(json["offset"][0]), float(json["offset"][1]), float(json["offset"][2])} :
+// 				Vector3f{float(json["offset"]), float(json["offset"]), float(json["offset"])};
+// 		}
 
-		if (json.contains("aabb")) {
-			// map the given aabb of the form [[minx,miny,minz],[maxx,maxy,maxz]] via an isotropic scale and translate to fit in the (0,0,0)-(1,1,1) cube, with the given center at 0.5,0.5,0.5
-			const auto& aabb=json["aabb"];
-			float length = std::max(0.000001f,std::max(std::max(std::abs(float(aabb[1][0])-float(aabb[0][0])),std::abs(float(aabb[1][1])-float(aabb[0][1]))),std::abs(float(aabb[1][2])-float(aabb[0][2]))));
-			result.scale = 1.f/length;
-			result.offset = { ((float(aabb[1][0])+float(aabb[0][0]))*0.5f)*-result.scale + 0.5f , ((float(aabb[1][1])+float(aabb[0][1]))*0.5f)*-result.scale + 0.5f,((float(aabb[1][2])+float(aabb[0][2]))*0.5f)*-result.scale + 0.5f};
-		}
+// 		if (json.contains("aabb")) {
+// 			// map the given aabb of the form [[minx,miny,minz],[maxx,maxy,maxz]] via an isotropic scale and translate to fit in the (0,0,0)-(1,1,1) cube, with the given center at 0.5,0.5,0.5
+// 			const auto& aabb=json["aabb"];
+// 			float length = std::max(0.000001f,std::max(std::max(std::abs(float(aabb[1][0])-float(aabb[0][0])),std::abs(float(aabb[1][1])-float(aabb[0][1]))),std::abs(float(aabb[1][2])-float(aabb[0][2]))));
+// 			result.scale = 1.f/length;
+// 			result.offset = { ((float(aabb[1][0])+float(aabb[0][0]))*0.5f)*-result.scale + 0.5f , ((float(aabb[1][1])+float(aabb[0][1]))*0.5f)*-result.scale + 0.5f,((float(aabb[1][2])+float(aabb[0][2]))*0.5f)*-result.scale + 0.5f};
+// 		}
 
-		if (json.contains("up")) {
-			// axes are permuted as for the xforms below
-			result.up[0] = float(json["up"][1]);
-			result.up[1] = float(json["up"][2]);
-			result.up[2] = float(json["up"][0]);
-		}
+// 		if (json.contains("up")) {
+// 			// axes are permuted as for the xforms below
+// 			result.up[0] = float(json["up"][1]);
+// 			result.up[1] = float(json["up"][2]);
+// 			result.up[2] = float(json["up"][0]);
+// 		}
 
-		if (json.contains("envmap") && result.envmap_resolution.isZero()) {
-			std::string json_provided_path = json["envmap"];
-			fs::path envmap_path = basepath / json_provided_path;
-			if (!envmap_path.exists()) {
-				throw std::runtime_error{std::string{"Environment map path "} + envmap_path.str() + " does not exist."};
-			}
+// 		if (json.contains("envmap") && result.envmap_resolution.isZero()) {
+// 			std::string json_provided_path = json["envmap"];
+// 			fs::path envmap_path = basepath / json_provided_path;
+// 			if (!envmap_path.exists()) {
+// 				throw std::runtime_error{std::string{"Environment map path "} + envmap_path.str() + " does not exist."};
+// 			}
 
-			if (equals_case_insensitive(envmap_path.extension(), "exr")) {
-				result.envmap_data = load_exr(envmap_path.str(), result.envmap_resolution.x(), result.envmap_resolution.y());
-				result.is_hdr = true;
-			} else {
-				result.envmap_data = load_stbi(envmap_path.str(), result.envmap_resolution.x(), result.envmap_resolution.y());
-			}
-		}
+// 			if (equals_case_insensitive(envmap_path.extension(), "exr")) {
+// 				result.envmap_data = load_exr(envmap_path.str(), result.envmap_resolution.x(), result.envmap_resolution.y());
+// 				result.is_hdr = true;
+// 			} else {
+// 				result.envmap_data = load_stbi(envmap_path.str(), result.envmap_resolution.x(), result.envmap_resolution.y());
+// 			}
+// 		}
 
-		if (json.contains("max_training_keyframes")) {
-			result.slam.max_training_keyframes = int(json["max_training_keyframes"]);
-		}
-		else{
-			result.slam.max_training_keyframes =  2048; // result.aabb_scale * 256;
-		}
-	}
+// 		if (json.contains("max_training_keyframes")) {
+// 			result.slam.max_training_keyframes = int(json["max_training_keyframes"]);
+// 		}
+// 		else{
+// 			result.slam.max_training_keyframes =  2048; // result.aabb_scale * 256;
+// 		}
+// 	}
 
-	tlog::warning() << "  Preallocate " << result.slam.max_training_keyframes << " images for keyframes in SLAM mode";
-	result.xforms.resize(result.slam.max_training_keyframes);
-	result.metadata.resize(result.slam.max_training_keyframes);
-	result.pixelmemory.resize(result.slam.max_training_keyframes);
-	result.depthmemory.resize(result.slam.max_training_keyframes);
-	result.raymemory.resize(result.slam.max_training_keyframes);
+// 	tlog::warning() << "  Preallocate " << result.slam.max_training_keyframes << " images for keyframes in SLAM mode";
+// 	result.xforms.resize(result.slam.max_training_keyframes);
+// 	result.metadata.resize(result.slam.max_training_keyframes);
+// 	result.pixelmemory.resize(result.slam.max_training_keyframes);
+// 	result.depthmemory.resize(result.slam.max_training_keyframes);
+// 	result.raymemory.resize(result.slam.max_training_keyframes);
 
 
-	tlog::success() << "Loaded nerf slam completed"   ;
-	tlog::info() << "  cam_aabb=" << cam_aabb;
+// 	tlog::success() << "Loaded nerf slam completed"   ;
+// 	tlog::info() << "  cam_aabb=" << cam_aabb;
 
-	if (result.has_rays) {
-		tlog::success() << "Loaded per-pixel rays.";
-	}
+// 	if (result.has_rays) {
+// 		tlog::success() << "Loaded per-pixel rays.";
+// 	}
 
-	result.sharpness_resolution = { 128, 72 };
-	result.sharpness_data.enlarge( result.sharpness_resolution.x() * result.sharpness_resolution.y() *  result.n_images );
+// 	result.sharpness_resolution = { 128, 72 };
+// 	result.sharpness_data.enlarge( result.sharpness_resolution.x() * result.sharpness_resolution.y() *  result.n_images );
 
-	return result;
-}
+// 	return result;
+// }
 
 TrainingXForm NerfDataset::get_posterior_extrinsic(int Id) {
     std::map<int, int>::iterator id_itr;
-    id_itr = this->slam.FrameId2img_i.find(Id);
+    id_itr = this->FrameId2i_img.find(Id);
 
-    if (id_itr == this->slam.FrameId2img_i.end()) {
+    if (id_itr == this->FrameId2i_img.end()) {
     	throw std::runtime_error{"query an Id not exist in dataset"};
     }
 
@@ -969,7 +982,7 @@ std::map<int, TrainingXForm> NerfDataset::get_posterior_extrinsic() {
 	std::map<int, TrainingXForm> ret;
 
 	// Not using ngp_matrix_to_nerf, it is for blender format
-	for (const auto& iter : this->slam.FrameId2img_i) {
+	for (const auto& iter : this->FrameId2i_img) {
 		int Id = iter.first;
 		int i_img = iter.second;
 		ret[Id] = {ngp_matrix_to_slam(this->xforms[i_img].start), ngp_matrix_to_slam(this->xforms[i_img].end)};
@@ -990,8 +1003,8 @@ NerfDataset NerfDataset::update_training_image(nlohmann::json frame) {
 	std::map<int, int>::iterator it;
 	int Id = frame["Id"];
 
-	it = this->slam.FrameId2img_i.find(Id);
-	if (it == this->slam.FrameId2img_i.end()) {
+	it = this->FrameId2i_img.find(Id);
+	if (it == this->FrameId2i_img.end()) {
 		throw std::runtime_error{"frame Id is not exists in NerfDataset"};
 	}
 
@@ -1017,6 +1030,7 @@ NerfDataset NerfDataset::update_training_image(nlohmann::json frame) {
 	return *this;
 }
 
+// Only call with ORB-SLAM
 NerfDataset NerfDataset::add_training_image(nlohmann::json frame, uint8_t *img, uint16_t *depth, uint8_t *alpha, uint8_t *mask) {
 
 	if (!frame.contains("Id") ) {
@@ -1025,43 +1039,38 @@ NerfDataset NerfDataset::add_training_image(nlohmann::json frame, uint8_t *img, 
 
 	int Id = frame["Id"];
 
-
 	// If already exists, then update the transform only. No need to reallocate memory.
 	std::map<int, int>::iterator it;
-	it = this->slam.FrameId2img_i.find(Id);
-	if (it != this->slam.FrameId2img_i.end()) {
+	it = this->FrameId2i_img.find(Id);
+	if (it != this->FrameId2i_img.end()) {
 		return update_training_image(frame);
 	}
 
-	// if(this->n_images == 0){
-	// 	this->xforms.resize(100);
-	// 	this->metadata.resize(100);
-	// 	this->pixelmemory.resize(100);
-	// 	this->depthmemory.resize(100);
-	// 	this->raymemory.resize(100);
-	// }
+	size_t i_img = this->n_images;
+	this->n_images += 1;
 
+	std::vector<tcnn::GPUMemory<Ray>> temp_raymemory;
+	std::vector<tcnn::GPUMemory<uint8_t>> temp_pixelmemory;
+	std::vector<tcnn::GPUMemory<float>> temp_depthmemory;
 
-	// debug fix only one image
-	// this->n_images = 1;
-	// // this->n_images += 1;
-	// // assert(this->xforms.size() <= this->n_images);
-	// this->xforms.resize(this->n_images);
-	// this->metadata.resize(this->n_images);
-	// this->pixelmemory.resize(this->n_images);
-	// this->depthmemory.resize(this->n_images);
-	// this->raymemory.resize(this->n_images);
+	this->xforms.resize(this->n_images);
+	this->metadata.resize(this->n_images);
 
-	this->xforms.resize(this->slam.max_training_keyframes);
-	this->metadata.resize(this->slam.max_training_keyframes);
-	this->pixelmemory.resize(this->slam.max_training_keyframes);
-	this->depthmemory.resize(this->slam.max_training_keyframes);
-	this->raymemory.resize(this->slam.max_training_keyframes);
+	// For GPUMemory, we need to manually move the old vector to new vector. If directly resize the old vector will cause error
+	temp_pixelmemory.resize(this->n_images);
+	temp_depthmemory.resize(this->n_images);
+	temp_raymemory.resize(this->n_images);
 
-	if (this->n_images >= this->slam.max_training_keyframes) {
-		tlog::warning() << this->n_images << "(Number of keyframes) > " << this->slam.max_training_keyframes
-		<< "(slam_max_keyframes). Only the latest " << this->slam.max_training_keyframes << " will be used in training" ;
+	for(int i = 0; i < this->n_images-1; i++) {
+		temp_pixelmemory[i] = std::move(this->pixelmemory[i]);
+		temp_depthmemory[i] = std::move(this->depthmemory[i]);
+		temp_raymemory[i]   = std::move(this->raymemory[i]);
 	}
+
+	this->pixelmemory = std::move(temp_pixelmemory);
+	this->depthmemory = std::move(temp_depthmemory);
+	this->raymemory   = std::move(temp_raymemory);
+
 
 	if (!frame.contains("h") || !frame.contains("w") ) {
 		throw std::runtime_error{"No height or width information provided"};
@@ -1070,9 +1079,6 @@ NerfDataset NerfDataset::add_training_image(nlohmann::json frame, uint8_t *img, 
 	if (!frame.contains("transform_matrix")) {
 		throw std::runtime_error{"No transform_matrix provided, should be the prior in SLAM"};
 	}
-
-	size_t i_img = this->n_images % this->slam.max_training_keyframes;
-	this->n_images += 1;
 
 	LoadedImageInfo dst;
 	dst = info; // copy defaults
@@ -1124,7 +1130,7 @@ NerfDataset NerfDataset::add_training_image(nlohmann::json frame, uint8_t *img, 
 		throw std::runtime_error{ "No pixels " };
 	}
 
-	if (this->slam.enable_depth_loading && info.depth_scale > 0.f && depth) {
+	if (this->enable_depth_loading && info.depth_scale > 0.f && depth) {
 		// int wa=0,ha=0;
 		// std::cout << "load depth ok" << std::endl;
 		// if(depth){
@@ -1203,9 +1209,9 @@ NerfDataset NerfDataset::add_training_image(nlohmann::json frame, uint8_t *img, 
 		}
 	}
 
-	this->metadata[i_img].rolling_shutter = slam.rolling_shutter;
-	this->metadata[i_img].principal_point = slam.principal_point;
-	this->metadata[i_img].camera_distortion = slam.camera_distortion;
+	this->metadata[i_img].rolling_shutter = this->rolling_shutter;
+	this->metadata[i_img].principal_point = this->principal_point;
+	this->metadata[i_img].camera_distortion = this->camera_distortion;
 
 	// See https://github.com/NVlabs/instant-ngp/discussions/153?converting=1
 	// nerf_matrix_to_ngp is only use for blender format. Instant-ngp changes the blender format to ngp,
@@ -1213,8 +1219,8 @@ NerfDataset NerfDataset::add_training_image(nlohmann::json frame, uint8_t *img, 
 	this->xforms[i_img].start = this->slam_matrix_to_ngp(this->xforms[i_img].start);
 	this->xforms[i_img].end = this->slam_matrix_to_ngp(this->xforms[i_img].end);
 
-	this->slam.FrameId2img_i[Id] = i_img;
-	this->set_training_image(i_img, dst.res, dst.pixels, dst.depth_pixels, dst.depth_scale * this->scale, dst.image_data_on_gpu, dst.image_type, EDepthDataType::UShort, slam.sharpen_amount, dst.white_transparent, dst.black_transparent, dst.mask_color, dst.rays);
+	this->FrameId2i_img[Id] = i_img;
+	this->set_training_image(i_img, dst.res, dst.pixels, dst.depth_pixels, dst.depth_scale * this->scale, dst.image_data_on_gpu, dst.image_type, EDepthDataType::UShort, this->sharpen_amount, dst.white_transparent, dst.black_transparent, dst.mask_color, dst.rays);
 
 	if (dst.image_data_on_gpu) {
 		CUDA_CHECK_THROW(cudaFree(dst.pixels));
