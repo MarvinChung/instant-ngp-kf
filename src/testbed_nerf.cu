@@ -1345,6 +1345,7 @@ __global__ void compute_loss_kernel_train_nerf(
 	float T = 1.f;
 
 	float EPSILON = 1e-4f;
+	float WEIGHT_THRESHOLD = 0.05f;
 
 	Array3f rgb_ray = Array3f::Zero();
 	Vector3f hitpoint = Vector3f::Zero();
@@ -1376,7 +1377,7 @@ __global__ void compute_loss_kernel_train_nerf(
 		depth_ray += weight * cur_depth;
 		T *= (1.f - alpha);
 
-		if ( weight > 0.1f ) {
+		if ( weight > WEIGHT_THRESHOLD ) {
 
 			// Compute the numbers of times being sampled if the pos has a reasonable weight
 			uint32_t mip = mip_from_dt(dt, pos);
@@ -1574,7 +1575,7 @@ __global__ void compute_loss_kernel_train_nerf(
 		float density_derivative = network_to_density_derivative(float(local_network_output[3]), density_activation);
 
 		float dweight_bound_loss_doutput = 0.f;
-		if( proposed_sample_count > 0 && !is_background_ray)
+		if( weight > WEIGHT_THRESHOLD && proposed_sample_count > 0 && !is_background_ray)
 		{
 			uint32_t mip = mip_from_dt(dt, pos);
 			uint32_t idx = cascaded_grid_idx_at(pos, mip);
@@ -1591,6 +1592,19 @@ __global__ void compute_loss_kernel_train_nerf(
 				
 			// times 0.01
 			// dweight_bound_loss_doutput = -0.02 * (grid_proposed_hit_prob-weight) * T * dt * density_derivative;
+
+			float weight_bound_loss = fmaxf(0.0f, weight-grid_proposed_hit_prob);
+			if (weight_bound_loss > 0.0f)
+			{
+				dweight_bound_loss_doutput = T * dt * density_derivative;
+			}
+
+			// float weight_bound_loss = fmaxf(0.0f, grid_proposed_hit_prob-weight);
+			// if (weight_bound_loss > 0.0f )
+			// {
+			// 	dweight_bound_loss_doutput = -T * dt * density_derivative;
+			// }
+
 
 			if(tid == 0)
 				printf("[tid:%d] k:%d grid_proposed_hit_prob:%f weight:%f TODO:design loss\n", tid, k, grid_proposed_hit_prob, weight);

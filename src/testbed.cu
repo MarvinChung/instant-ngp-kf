@@ -1011,6 +1011,19 @@ void Testbed::imgui() {
 	ImGui::End();
 }
 
+void Testbed::add_sparse_point_cloud(std::vector<Eigen::Vector3f>& sparse_map_points_positions, std::vector<Eigen::Vector3f>& sparse_ref_map_points_positions) {
+	m_nerf.sparse_map_points_positions.clear();
+	m_nerf.sparse_ref_map_points_positions.clear();
+
+	for(auto &map_point : sparse_map_points_positions) {
+		m_nerf.sparse_map_points_positions.push_back(m_nerf.training.dataset.slam_point_to_ngp(map_point));
+	}
+
+	for(auto &map_point : sparse_ref_map_points_positions) {
+		m_nerf.sparse_ref_map_points_positions.push_back(m_nerf.training.dataset.slam_point_to_ngp(map_point));
+	}
+}
+
 void Testbed::visualize_map_points(ImDrawList* list, const Matrix<float, 4, 4>& world2proj) {
 
 	std::cout << "[testbed.cu] visualize map points number:" << m_nerf.map_points_positions.size() << std::endl;
@@ -1019,10 +1032,15 @@ void Testbed::visualize_map_points(ImDrawList* list, const Matrix<float, 4, 4>& 
 		visualize_map_point(list, world2proj, map_point, 0x40ffff40);
 	}
 
-	// for (int i = 0; i < ref_map_points.size(); ++i) {
-	// 	// red 
-	// 	visualize_map_point(list, world2proj, ref_map_points[i], 0xff4040ff);
-	// }
+	for (auto &map_point : m_nerf.sparse_map_points_positions) {
+
+		visualize_map_point(list, world2proj, map_point, 0x80ffffff);
+	}
+
+	for (auto &map_point : m_nerf.sparse_ref_map_points_positions ) {
+		// red 
+		visualize_map_point(list, world2proj, map_point, 0xff4040ff);
+	}
 }
 
 void Testbed::visualize_nerf_cameras(ImDrawList* list, const Matrix<float, 4, 4>& world2proj) {
