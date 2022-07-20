@@ -1012,6 +1012,7 @@ void Testbed::imgui() {
 }
 
 void Testbed::add_sparse_point_cloud(std::vector<Eigen::Vector3f>& sparse_map_points_positions, std::vector<Eigen::Vector3f>& sparse_ref_map_points_positions) {
+	CUDA_CHECK_THROW(cudaDeviceSynchronize());
 	m_nerf.sparse_map_points_positions.clear();
 	m_nerf.sparse_ref_map_points_positions.clear();
 
@@ -1030,17 +1031,19 @@ void Testbed::add_sparse_point_cloud(std::vector<Eigen::Vector3f>& sparse_map_po
 
 void Testbed::visualize_map_points(ImDrawList* list, const Matrix<float, 4, 4>& world2proj) {
 
-	std::cout << "[testbed.cu] visualize map points number:" << m_nerf.map_points_positions.size() << std::endl;
+	// std::cout << "[testbed.cu] visualize nerf triangulation map points number:" << m_nerf.map_points_positions.size() << std::endl;
 	for (auto &map_point : m_nerf.map_points_positions) {
 		// green
 		visualize_map_point(list, world2proj, map_point, 0x40ffff40);
 	}
 
+	// std::cout << "[testbed.cu] visualize orb-slam triangulation map points number:" << m_nerf.sparse_map_points_positions.size() << std::endl;
 	for (auto &map_point : m_nerf.sparse_map_points_positions) {
 
 		visualize_map_point(list, world2proj, map_point, 0x80ffffff);
 	}
 
+	// std::cout << "[testbed.cu] visualize orb-slam reference triangulation map points number:" << m_nerf.sparse_ref_map_points_positions.size() << std::endl;
 	for (auto &map_point : m_nerf.sparse_ref_map_points_positions ) {
 		// red 
 		visualize_map_point(list, world2proj, map_point, 0xff4040ff);
@@ -2360,6 +2363,9 @@ void Testbed::train(uint32_t batch_size) {
 		}
 	}
 
+	std::cout << "[testbed.cu] train start" << std::endl;
+	std::cout << "m_nerf.training.n_images_for_training: " << m_nerf.training.n_images_for_training << std::endl;
+
 	uint32_t n_prep_to_skip = (m_testbed_mode == ETestbedMode::Nerf || m_testbed_mode == ETestbedMode::NerfSlam) ? tcnn::clamp(m_training_step / 16u, 1u, 16u) : 1u;
 	if (m_training_step % n_prep_to_skip == 0) {
 		auto start = std::chrono::steady_clock::now();
@@ -2379,6 +2385,8 @@ void Testbed::train(uint32_t batch_size) {
 
 		CUDA_CHECK_THROW(cudaStreamSynchronize(m_training_stream));
 	}
+
+	std::cout << "[testbed.cu] n_prep_to_skip: " << n_prep_to_skip << std::endl;
 
 	// Find leaf optimizer and update its settings
 	json* leaf_optimizer_config = &m_network_config["optimizer"];
