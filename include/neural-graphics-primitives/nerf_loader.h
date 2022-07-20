@@ -154,8 +154,8 @@ struct NerfDataset {
 
 	Eigen::Matrix<float, 3, 4> slam_matrix_to_ngp(const Eigen::Matrix<float, 3, 4>& slam_matrix) {
 		Eigen::Matrix<float, 3, 4> result = slam_matrix;
-		result.col(0) *= -1;
-		result.col(1) *= -1;
+		// result.col(0) *= -1;
+		// result.col(1) *= -1;
 
 		// result(0,3) *= -1;
 		// result(1,3) *= -1;
@@ -191,8 +191,8 @@ struct NerfDataset {
 
 	Eigen::Vector3f slam_point_to_ngp(const Eigen::Vector3f& map_point) {
 		Eigen::Vector3f result = map_point;
-		result(0) *= -1;
-		result(1) *= -1;
+		// result(0) *= -1;
+		// result(1) *= -1;
 		result = result * scale + offset;
 		return std::move(result);
 	}
