@@ -292,6 +292,7 @@ public:
 	void reset_network();
 	void create_empty_nerf_dataset(size_t n_images, int aabb_scale = 1, bool is_hdr = false);
 	// void update_training_info_from_dataset();
+	void regress_nerf(NerfDataset &local_dataset, std::vector<Eigen::Vector3f>& ngp_map_points, cudaStream_t stream);
 	void load_nerfslam();
 	void load_nerf();
 	void load_mesh();
@@ -334,6 +335,7 @@ public:
 	// 		std::unique_ptr<tcnn::Context> forward_ctx,
 	// 		cudaStream_t stream);
 	void generate_training_samples_sdf(Eigen::Vector3f* positions, float* distances, uint32_t n_to_generate, cudaStream_t stream, bool uniform_only);
+	void regress_density_grid_nerf(float decay, uint32_t n_nonuniform_density_grid_samples, cudaStream_t stream);
 	void update_density_grid_nerf(float decay, uint32_t n_uniform_density_grid_samples, uint32_t n_nonuniform_density_grid_samples, cudaStream_t stream);
 	void update_density_grid_mean_and_bitfield(cudaStream_t stream);
 	void train_nerf(uint32_t target_batch_size, bool get_loss_scalar, cudaStream_t stream);
@@ -377,6 +379,7 @@ public:
 	TrainingXForm get_posterior_extrinsic(int Id);
 	std::map<int, TrainingXForm> get_posterior_extrinsic();
 	// void add_map_points(std::vector<Eigen::Vector3f>& map_points, std::vector<Eigen::Vector3f>& ref_map_points);
+	void LocalNerfBundleAdjustment(nlohmann::json frame, std::vector<Eigen::Vector3f>& vLocalMapPoints, uint8_t *img, uint16_t *depth=nullptr, uint8_t *alpha=nullptr, uint8_t *mask=nullptr);
 	void update_training_image(nlohmann::json frame);
 	void add_training_image(nlohmann::json frame, uint8_t *img, uint16_t *depth=nullptr, uint8_t *alpha=nullptr, uint8_t *mask=nullptr);
 	void train_and_render(bool skip_rendering);
@@ -647,6 +650,8 @@ public:
 		std::vector<Eigen::Vector3f> map_points_positions;
 		std::vector<Eigen::Vector3f> sparse_map_points_positions;
 		std::vector<Eigen::Vector3f> sparse_ref_map_points_positions;
+		tcnn::GPUMemory<Eigen::Vector3f> sparse_map_points_positions_gpu;
+		tcnn::GPUMemory<Eigen::Vector3f> sparse_ref_map_points_positions_gpu;
 
 		uint32_t max_cascade = 0;
 

@@ -189,8 +189,8 @@ struct NerfDataset {
 		return result;
 	}
 
-	Eigen::Vector3f slam_point_to_ngp(const Eigen::Vector3f& map_points) {
-		Eigen::Vector3f result = map_points;
+	Eigen::Vector3f slam_point_to_ngp(const Eigen::Vector3f& map_point) {
+		Eigen::Vector3f result = map_point;
 		result(0) *= -1;
 		result(1) *= -1;
 		result = result * scale + offset;
