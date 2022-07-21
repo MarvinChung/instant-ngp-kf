@@ -2848,7 +2848,11 @@ void Testbed::load_snapshot(const std::string& filepath_string) {
 		// and render using just that.
 		if (m_data_path.empty() && m_network_config["snapshot"]["nerf"].contains("dataset")) {
 			m_nerf.training.dataset = m_network_config["snapshot"]["nerf"]["dataset"];
-			load_nerf();
+			if (m_testbed_mode == ETestbedMode::Nerf)
+				load_nerf();
+			else if (m_testbed_mode == ETestbedMode::NerfSlam)
+				load_nerfslam();
+
 		}
 
 		if (m_network_config["snapshot"]["density_grid_size"] != NERF_GRIDSIZE()) {
