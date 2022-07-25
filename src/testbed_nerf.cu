@@ -1808,7 +1808,7 @@ __global__ void compute_loss_kernel_train_nerf(
 			uint32_t mip = mip_from_dt(dt, pos);
 			uint32_t idx = cascaded_grid_idx_at(pos, mip);
 
-			// extend to other level
+			// // extend to other level
 			// for(int level = mip; level < NERF_CASCADES()-1; level++){
 			// 	// set a threshold to prevent overflow
 			// 	if (density_grid_sample_ct[idx+grid_mip_offset(level)] < (1<<22)) {
@@ -2018,11 +2018,12 @@ __global__ void compute_loss_kernel_train_nerf(
 			// times 0.01
 			// dweight_bound_loss_doutput = -0.02 * (grid_proposed_hit_prob-weight) * T * dt * density_derivative;
 
-			float weight_bound_loss = fmaxf(0.0f, weight-grid_proposed_hit_prob);
-			if (weight_bound_loss > 0.0f)
-			{
-				dweight_bound_loss_doutput = T * dt * density_derivative;
-			}
+			// // Use this
+			// float weight_bound_loss = fmaxf(0.0f, weight-grid_proposed_hit_prob);
+			// if (weight_bound_loss > 0.0f)
+			// {
+			// 	dweight_bound_loss_doutput = T * dt * density_derivative;
+			// }
 
 			// float weight_bound_loss = fmaxf(0.0f, grid_proposed_hit_prob-weight);
 			// if (weight_bound_loss > 0.0f )
@@ -2034,11 +2035,6 @@ __global__ void compute_loss_kernel_train_nerf(
 			if(tid == 0)
 				printf("[tid:%d] k:%d grid_proposed_hit_prob:%f weight:%f TODO:design loss\n", tid, k, grid_proposed_hit_prob, weight);
 		}
-		
-		// if( tid == 0) {
-		// 	printf("[tid:%d] k:%d weight:%f \n", tid, k, weight);
-		// }
-
 
 		// we know the suffix of this ray compared to where we are up to. note the suffix depends on this step's alpha as suffix = (1-alpha)*(somecolor), so dsuffix/dalpha = -somecolor = -suffix/(1-alpha)
 		const Array3f suffix = rgb_ray - rgb_ray2;
@@ -3330,7 +3326,7 @@ void Testbed::create_empty_nerf_dataset(size_t n_images, int aabb_scale, bool is
 
 void Testbed::load_nerfslam() {
 	
-	CUDA_CHECK_THROW(cudaDeviceSynchronize());
+	// CUDA_CHECK_THROW(cudaDeviceSynchronize());
 	if (!m_data_path.empty()) {
 		std::vector<fs::path> json_paths;
 		if (m_data_path.is_directory()) {

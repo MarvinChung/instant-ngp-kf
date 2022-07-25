@@ -1501,15 +1501,15 @@ void Testbed::LocalNerfBundleAdjustment(nlohmann::json frame, std::vector<Eigen:
 
 void Testbed::update_training_image(nlohmann::json frame) 
 {
-	CUDA_CHECK_THROW(cudaDeviceSynchronize());
+	// CUDA_CHECK_THROW(cudaDeviceSynchronize());
 	m_nerf.training.dataset.update_training_image(frame);
 	m_nerf.training.update_transforms();
 	CUDA_CHECK_THROW(cudaDeviceSynchronize());
 }
 
 void Testbed::add_training_image(nlohmann::json frame, uint8_t *img, uint16_t *depth, uint8_t *alpha, uint8_t *mask) {
-	CUDA_CHECK_THROW(cudaDeviceSynchronize());
-	CUDA_CHECK_THROW(cudaStreamSynchronize(m_training_stream));
+	// CUDA_CHECK_THROW(cudaDeviceSynchronize());
+	// CUDA_CHECK_THROW(cudaStreamSynchronize(m_training_stream));
 
 	m_training_data_available = true;
 
@@ -2363,9 +2363,6 @@ void Testbed::train(uint32_t batch_size) {
 		}
 	}
 
-	std::cout << "[testbed.cu] train start" << std::endl;
-	std::cout << "m_nerf.training.n_images_for_training: " << m_nerf.training.n_images_for_training << std::endl;
-
 	uint32_t n_prep_to_skip = (m_testbed_mode == ETestbedMode::Nerf || m_testbed_mode == ETestbedMode::NerfSlam) ? tcnn::clamp(m_training_step / 16u, 1u, 16u) : 1u;
 	if (m_training_step % n_prep_to_skip == 0) {
 		auto start = std::chrono::steady_clock::now();
@@ -2385,8 +2382,6 @@ void Testbed::train(uint32_t batch_size) {
 
 		CUDA_CHECK_THROW(cudaStreamSynchronize(m_training_stream));
 	}
-
-	std::cout << "[testbed.cu] n_prep_to_skip: " << n_prep_to_skip << std::endl;
 
 	// Find leaf optimizer and update its settings
 	json* leaf_optimizer_config = &m_network_config["optimizer"];

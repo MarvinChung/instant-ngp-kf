@@ -183,8 +183,6 @@ struct NerfDataset {
 
 	Eigen::Matrix<float, 3, 4> ngp_matrix_to_slam(const Eigen::Matrix<float, 3, 4>& ngp_matrix) {
 		Eigen::Matrix<float, 3, 4> result = ngp_matrix;
-		result.col(0) *= -1;
-		result.col(1) *= -1;
 		result.col(3) = (result.col(3) - offset) / scale;
 		return result;
 	}
