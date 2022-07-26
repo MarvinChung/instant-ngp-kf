@@ -292,7 +292,7 @@ public:
 	void reset_network();
 	void create_empty_nerf_dataset(size_t n_images, int aabb_scale = 1, bool is_hdr = false);
 	// void update_training_info_from_dataset();
-	void regress_nerf(NerfDataset &local_dataset, std::vector<Eigen::Vector3f>& ngp_map_points, cudaStream_t stream);
+	// void regress_nerf(NerfDataset &local_dataset, std::vector<Eigen::Vector3f>& ngp_map_points, cudaStream_t stream);
 	void load_nerfslam();
 	void load_nerf();
 	void load_mesh();
@@ -335,7 +335,7 @@ public:
 	// 		std::unique_ptr<tcnn::Context> forward_ctx,
 	// 		cudaStream_t stream);
 	void generate_training_samples_sdf(Eigen::Vector3f* positions, float* distances, uint32_t n_to_generate, cudaStream_t stream, bool uniform_only);
-	void regress_density_grid_nerf(float decay, uint32_t n_nonuniform_density_grid_samples, cudaStream_t stream);
+	// void regress_density_grid_nerf(float decay, uint32_t n_nonuniform_density_grid_samples, cudaStream_t stream);
 	void update_density_grid_nerf(float decay, uint32_t n_uniform_density_grid_samples, uint32_t n_nonuniform_density_grid_samples, cudaStream_t stream);
 	void update_density_grid_mean_and_bitfield(cudaStream_t stream);
 	void train_nerf(uint32_t target_batch_size, bool get_loss_scalar, cudaStream_t stream);
@@ -647,6 +647,7 @@ public:
 		uint32_t density_grid_ema_step = 0;
 
 		tcnn::GPUMemory<uint32_t> density_grid_sample_ct;
+		tcnn::GPUMemory<float> density_grid_sample_ct_mean;
 		std::vector<Eigen::Vector3f> map_points_positions;
 		std::vector<Eigen::Vector3f> sparse_map_points_positions;
 		std::vector<Eigen::Vector3f> sparse_ref_map_points_positions;
