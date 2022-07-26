@@ -487,7 +487,8 @@ __global__ void generate_grid_map_points_nerf_nonuniform(const uint32_t n_elemen
 
 		uint32_t base = atomicAdd(counter, 1);
 
-		out[base] = { warp_position(pos, aabb) };
+		// No need to warp position. Warp position will normalized the input to 0 ~ 1 for MLP;
+		out[base] = { pos };
 	}
 
 	
@@ -3610,7 +3611,7 @@ void Testbed::update_density_grid_nerf(float decay, uint32_t n_uniform_density_g
 			map_points_positions,
 			map_points_counter,
 			m_nerf.max_cascade+1,
-			32 // A grid being sampled 32 points should be consider as surface
+			128 // A grid being sampled 128 points should be consider as surface
 		);
 
 		uint32_t map_points_counter_cpu;
@@ -3623,8 +3624,6 @@ void Testbed::update_density_grid_nerf(float decay, uint32_t n_uniform_density_g
 		for( uint32_t i = 0; i < map_points_counter_cpu; i++) {
 			CUDA_CHECK_THROW(cudaMemcpyAsync(&map_points_positions_cpu[i], map_points_positions + i, sizeof(Eigen::Vector3f), cudaMemcpyDeviceToHost, stream));
 		}
-
-		std::cout << "[testbed_nerf] insert map_points number: " << map_points_counter_cpu << std::endl;
 
 		if (map_points_counter_cpu > 0)
 			m_nerf.map_points_positions.insert(m_nerf.map_points_positions.end(), map_points_positions_cpu.begin(), map_points_positions_cpu.end());
@@ -3797,8 +3796,6 @@ void Testbed::regress_density_grid_nerf(float decay, uint32_t n_nonuniform_densi
 		for( uint32_t i = 0; i < map_points_counter_cpu; i++) {
 			CUDA_CHECK_THROW(cudaMemcpyAsync(&map_points_positions_cpu[i], map_points_positions + i, sizeof(Eigen::Vector3f), cudaMemcpyDeviceToHost, stream));
 		}
-
-		std::cout << "[testbed_nerf] insert map_points number: " << map_points_counter_cpu << std::endl;
 
 		if (map_points_counter_cpu > 0)
 			m_nerf.map_points_positions.insert(m_nerf.map_points_positions.end(), map_points_positions_cpu.begin(), map_points_positions_cpu.end());
@@ -4919,8 +4916,6 @@ void Testbed::train_nerf_camera_second_order(
 */
 
 void Testbed::training_prep_nerf(uint32_t batch_size, cudaStream_t stream) {
-
-	std::cout << "[testbed_nerf.cu] training_prep_nerf" << std::endl;
 
 	if (m_nerf.training.n_images_for_training == 0) {
 		return;
