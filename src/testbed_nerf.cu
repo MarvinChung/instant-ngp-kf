@@ -685,7 +685,7 @@ __global__ void triangualtion_ema_grid_samples_nerf(const uint32_t n_elements,
 	if (i >= n_elements) return;
 
 	float importance = grid_in[i]; // only importance from density network
-	// float coeff = (1.0f + log2f(1.0f + grid_sample_count[i]));
+	// float coeff = powf(1.01, (float)grid_sample_count[i]);
 
 	// float ema_debias_old = 1 - (float)powf(decay, count);
 	// float ema_debias_new = 1 - (float)powf(decay, count+1);
@@ -697,8 +697,8 @@ __global__ void triangualtion_ema_grid_samples_nerf(const uint32_t n_elements,
 	// Basically, we want the grid cell turned on as soon as _ANYTHING_ visible is in there.
 
 	float prev_val = grid_out[i]; // contain old_importance * (1.0f + log2f(1.0f + old_grid_sample_count[i]))
-	if (i < 10 && (prev_val > 1000 || importance > 1000)) {
-		printf("[tid: %d] prev_val:%f importance:%f\n", i, prev_val, importance);
+	if (i < 10 || (prev_val > 1000 || importance > 1000)) {
+		printf("[tid: %d] prev_val:%f importance:%f coeff:%f\n", i, prev_val, importance, coeff);
 	}
 
 	// float val = (prev_val<0.f) ? prev_val : fmaxf(prev_val * decay, importance*coeff);
