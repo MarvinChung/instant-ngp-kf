@@ -1784,8 +1784,8 @@ __global__ void compute_loss_kernel_train_nerf(
 	uint32_t compacted_numsteps = 0;
 	Eigen::Vector3f ray_o = rays_in_unnormalized[tid].o;
 
-	// Vector3f pos_arr[NERF_STEPS()];
-	// float weight_arr[NERF_STEPS()];
+	Vector3f pos_arr[NERF_STEPS()];
+	float weight_arr[NERF_STEPS()];
 	float proposed_exp_sum = 0;
 
 	for (; compacted_numsteps < numsteps; ++compacted_numsteps) {
@@ -1827,8 +1827,10 @@ __global__ void compute_loss_kernel_train_nerf(
 		// 	assert(false);
 		// }
 
-		// pos_arr[compacted_numsteps] = pos;
-		// weight_arr[compacted_numsteps] = weight;
+		pos_arr[compacted_numsteps] = pos;
+		if (compacted_numsteps != 0)
+			pos_arr[compacted_numsteps] -= pos_arr[0];
+		weight_arr[compacted_numsteps] = weight;
 
 		network_output += padded_output_width;
 		coords_in += 1;
@@ -1975,6 +1977,27 @@ __global__ void compute_loss_kernel_train_nerf(
 	T = 1.f;
 
 	//  const float inv_dist = 1.0f/(pos_arr[compacted_numsteps-1] - pos_arr[0]).squaredNorm();
+		
+	// normalized ray distances
+	float s[NERF_STEPS()];
+	float len = pos_arr[compacted_numsteps-1].norm();
+	float test_len = std::sqrt( pos_arr[compacted_numsteps-1].x()*pos_arr[compacted_numsteps-1].x() + pos_arr[compacted_numsteps-1].y()*pos_arr[compacted_numsteps-1].y() + pos_arr[compacted_numsteps-1].z()*pos_arr[compacted_numsteps-1].z() );
+	for (int i=1; i<compacted_numsteps; ++i){
+		s[i] = pos_arr[i].norm() / len;
+	}
+	s[0] = 0;
+
+	float w_prefix[NERF_STEPS()];
+	float ws_prefix[NERF_STEPS()];
+	float w_cumsum = 0;
+    float ws_cumsum = 0;
+	for (int i=0; i<compacted_numsteps-1; ++i){
+		w_prefix[i] = w_cumsum;
+		ws_prefix[i] = ws_cumsum;
+     	w_cumsum += weight_arr[i];
+      	ws_cumsum += weight_arr[i] * (s[i]+s[i+1])/2;
+	}
+
 	for (uint32_t k = 0; k < compacted_numsteps; ++k) {
 		if (max_level_rand_training) {
 			max_level_compacted_ptr[k] = max_level;
@@ -1998,6 +2021,15 @@ __global__ void compute_loss_kernel_train_nerf(
 		T *= (1.f - alpha);
 
 		float density_derivative = network_to_density_derivative(float(local_network_output[3]), density_activation);
+
+		// distortion loss
+		float distortion_loss = 0.f;
+		if( k != compacted_numsteps-1){
+			float loss_uni =  weight_arr[k] * weight_arr[k] * (s[k+1] - s[k]) / 3;
+			float loss_bi =  2 * weight_arr[k] * ( (s[k]+s[k+1])/2 * w_prefix[k] - ws_prefix[k]);
+			distortion_loss = density_derivative * dt * (loss_uni + loss_bi);
+		}
+
 
 		float dweight_bound_loss_doutput = 0.f;
 		if( weight > WEIGHT_THRESHOLD && proposed_exp_sum > 0 && !is_background_ray)
@@ -2061,6 +2093,7 @@ __global__ void compute_loss_kernel_train_nerf(
 		local_dL_doutput[3] =
 			loss_scale * dloss_by_dmlp +
 			loss_scale * dweight_bound_loss_doutput + 
+			loss_scale * distortion_loss * 0.01 + 
 			(float(local_network_output[3]) < 0.0f ? -output_l1_reg_density : 0.0f) +
 			(float(local_network_output[3]) > -10.0f && depth < near_distance ? 1e-4f : 0.0f);
 
