@@ -1011,18 +1011,43 @@ void Testbed::imgui() {
 	ImGui::End();
 }
 
+void Testbed::add_sparse_point_cloud(std::vector<Eigen::Vector3f>& sparse_map_points_positions, std::vector<Eigen::Vector3f>& sparse_ref_map_points_positions) {
+	CUDA_CHECK_THROW(cudaDeviceSynchronize());
+	m_nerf.sparse_map_points_positions.clear();
+	m_nerf.sparse_ref_map_points_positions.clear();
+
+	for(auto &map_point : sparse_map_points_positions) {
+		m_nerf.sparse_map_points_positions.push_back(m_nerf.training.dataset.slam_point_to_ngp(map_point));
+	}
+
+	for(auto &map_point : sparse_ref_map_points_positions) {
+		m_nerf.sparse_ref_map_points_positions.push_back(m_nerf.training.dataset.slam_point_to_ngp(map_point));
+	}
+
+	m_nerf.sparse_map_points_positions_gpu.resize_and_copy_from_host(m_nerf.sparse_map_points_positions);
+	m_nerf.sparse_ref_map_points_positions_gpu.resize_and_copy_from_host(m_nerf.sparse_ref_map_points_positions);
+
+}
+
 void Testbed::visualize_map_points(ImDrawList* list, const Matrix<float, 4, 4>& world2proj) {
 
-	std::cout << "[testbed.cu] visualize map points number:" << m_nerf.map_points_positions.size() << std::endl;
+	// std::cout << "[testbed.cu] visualize nerf triangulation map points number:" << m_nerf.map_points_positions.size() << std::endl;
 	for (auto &map_point : m_nerf.map_points_positions) {
 		// green
 		visualize_map_point(list, world2proj, map_point, 0x40ffff40);
 	}
 
-	// for (int i = 0; i < ref_map_points.size(); ++i) {
-	// 	// red 
-	// 	visualize_map_point(list, world2proj, ref_map_points[i], 0xff4040ff);
-	// }
+	// std::cout << "[testbed.cu] visualize orb-slam triangulation map points number:" << m_nerf.sparse_map_points_positions.size() << std::endl;
+	for (auto &map_point : m_nerf.sparse_map_points_positions) {
+
+		visualize_map_point(list, world2proj, map_point, 0x80ffffff);
+	}
+
+	// std::cout << "[testbed.cu] visualize orb-slam reference triangulation map points number:" << m_nerf.sparse_ref_map_points_positions.size() << std::endl;
+	for (auto &map_point : m_nerf.sparse_ref_map_points_positions ) {
+		// red 
+		visualize_map_point(list, world2proj, map_point, 0xff4040ff);
+	}
 }
 
 void Testbed::visualize_nerf_cameras(ImDrawList* list, const Matrix<float, 4, 4>& world2proj) {
@@ -1427,17 +1452,64 @@ void Testbed::draw_gui() {
 // 	CUDA_CHECK_THROW(cudaDeviceSynchronize());
 // }
 
+/*
+void Testbed::LocalNerfBundleAdjustment(nlohmann::json frame, std::vector<Eigen::Vector3f>& vLocalMapPoints, uint8_t *img, uint16_t *depth, uint8_t *alpha, uint8_t *mask)
+{
+	// Regress Nerf Model with sparse point cloud and return optimized transform matrix.
+
+	CUDA_CHECK_THROW(cudaDeviceSynchronize());
+	CUDA_CHECK_THROW(cudaStreamSynchronize(m_training_stream));
+
+    std::cout << "[testbed.cu] start LocalNerfBundleAdjustment" << std::endl;
+
+	NerfDataset local_dataset;
+	if (!m_data_path.empty()) {
+		std::vector<fs::path> json_paths;
+		if (m_data_path.is_directory()) {
+			for (const auto& path : fs::directory{m_data_path}) {
+				if (path.is_file() && equals_case_insensitive(path.extension(), "json")) {
+					json_paths.emplace_back(path);
+				}
+			}
+		} else if (equals_case_insensitive(m_data_path.extension(), "msgpack")) {
+			load_snapshot(m_data_path.str());
+			set_train(false);
+			return;
+		} else if (equals_case_insensitive(m_data_path.extension(), "json")) {
+			json_paths.emplace_back(m_data_path);
+		} else {
+			throw std::runtime_error{"NeRF data path must either be a json file or a directory containing json files."};
+		}
+
+		local_dataset = ngp::load_nerf(json_paths, m_nerf.sharpen);
+	}
+	else{
+		throw std::runtime_error{"NeRF data path must be set before LocalNerfBundleAdjustment."};
+	}
+
+	local_dataset.add_training_image(frame, img, depth, alpha, mask);
+
+    std::vector<Eigen::Vector3f> ngp_map_points(vLocalMapPoints.size());
+    for(int i = 0; i < vLocalMapPoints.size(); i++) {
+    	ngp_map_points[i] = local_dataset.slam_point_to_ngp(vLocalMapPoints[i]);
+    }
+
+    std::cout << "[testbed.cu] start regress_nerf" << std::endl;
+    regress_nerf(local_dataset, ngp_map_points, m_training_stream);
+}
+*/
+
 void Testbed::update_training_image(nlohmann::json frame) 
 {
-	CUDA_CHECK_THROW(cudaDeviceSynchronize());
+	// CUDA_CHECK_THROW(cudaDeviceSynchronize());
 	m_nerf.training.dataset.update_training_image(frame);
 	m_nerf.training.update_transforms();
 	CUDA_CHECK_THROW(cudaDeviceSynchronize());
 }
 
 void Testbed::add_training_image(nlohmann::json frame, uint8_t *img, uint16_t *depth, uint8_t *alpha, uint8_t *mask) {
-	CUDA_CHECK_THROW(cudaDeviceSynchronize());
-	CUDA_CHECK_THROW(cudaStreamSynchronize(m_training_stream));
+	// CUDA_CHECK_THROW(cudaDeviceSynchronize());
+	// CUDA_CHECK_THROW(cudaStreamSynchronize(m_training_stream));
 
 	m_training_data_available = true;
 
@@ -2771,7 +2843,11 @@ void Testbed::load_snapshot(const std::string& filepath_string) {
 		// and render using just that.
 		if (m_data_path.empty() && m_network_config["snapshot"]["nerf"].contains("dataset")) {
 			m_nerf.training.dataset = m_network_config["snapshot"]["nerf"]["dataset"];
-			load_nerf();
+			if (m_testbed_mode == ETestbedMode::Nerf)
+				load_nerf();
+			else if (m_testbed_mode == ETestbedMode::NerfSlam)
+				load_nerfslam();
+
 		}
 
 		if (m_network_config["snapshot"]["density_grid_size"] != NERF_GRIDSIZE()) {

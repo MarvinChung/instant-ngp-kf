@@ -220,6 +220,7 @@ PYBIND11_MODULE(pyngp, m) {
 
 	py::enum_<ETestbedMode>(m, "TestbedMode")
 		.value("Nerf", ETestbedMode::Nerf)
+		.value("NerfSlam", ETestbedMode::NerfSlam)
 		.value("Sdf", ETestbedMode::Sdf)
 		.value("Image", ETestbedMode::Image)
 		.value("Volume", ETestbedMode::Volume)

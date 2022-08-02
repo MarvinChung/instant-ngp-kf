@@ -30,7 +30,7 @@ def parse_args():
 	parser = argparse.ArgumentParser(description="Run neural graphics primitives testbed with additional configuration & output options")
 
 	parser.add_argument("--scene", "--training_data", default="", help="The scene to load. Can be the scene's name or a full path to the training data.")
-	parser.add_argument("--mode", default="", const="nerf", nargs="?", choices=["nerf", "sdf", "image", "volume"], help="Mode can be 'nerf', 'sdf', 'image' or 'volume'. Inferred from the scene if unspecified.")
+	parser.add_argument("--mode", default="", const="nerf", nargs="?", choices=["nerf", "nerfslam", "sdf", "image", "volume"], help="Mode can be 'nerf', 'sdf', 'image' or 'volume'. Inferred from the scene if unspecified.")
 	parser.add_argument("--network", default="", help="Path to the network config. Uses the scene's default if unspecified.")
 
 	parser.add_argument("--load_snapshot", default="", help="Load this snapshot before training. recommended extension: .msgpack")
@@ -83,6 +83,10 @@ if __name__ == "__main__":
 		scenes = scenes_sdf
 	elif args.mode == "nerf":
 		mode = ngp.TestbedMode.Nerf
+		configs_dir = os.path.join(ROOT_DIR, "configs", "nerf")
+		scenes = scenes_nerf
+	elif args.mode == "nerfslam":
+		mode = ngp.TestbedMode.NerfSlam
 		configs_dir = os.path.join(ROOT_DIR, "configs", "nerf")
 		scenes = scenes_nerf
 	elif args.mode == "image":

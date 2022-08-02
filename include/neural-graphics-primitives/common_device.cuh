@@ -302,7 +302,7 @@ inline __host__ __device__ Eigen::Vector2f pos_to_pixel(
 	const Eigen::Vector3f& pos,
 	const Eigen::Vector2i& resolution,
 	const Eigen::Vector2f& focal_length,
-	const Eigen::Matrix<float, 3, 4>& camera_matrix,
+	const Eigen::Matrix<float, 3, 4>& camera_matrix, //c2w
 	const Eigen::Vector2f& screen_center,
 	const Eigen::Vector3f& parallax_shift,
 	const CameraDistortion& camera_distortion = {}
