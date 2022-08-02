@@ -461,7 +461,34 @@ inline __device__ int mip_from_dt(float dt, const Vector3f& pos) {
 // 	indices[i] = cascaded_grid_idx_at(pos, 0);;
 // }
 
-__global__ void generate_grid_map_points_nerf_nonuniform(const uint32_t n_elements, default_rng_t rng, const uint32_t step, BoundingBox aabb, const uint32_t* __restrict__ grid_in, Vector3f* __restrict__ out, uint32_t *counter, uint32_t n_cascades, /*const float* thresh_ptr, */ const uint32_t thresh) {
+__global__ void clear_density_grid_sample_ct_msb(
+	const uint32_t n_elements,
+	uint8_t* density_grid_sample_ct
+)
+{
+	const uint32_t tid = threadIdx.x + blockIdx.x * blockDim.x;
+	if (tid >= n_elements) return;
+
+	density_grid_sample_ct[tid] &= 0x7f;
+}
+
+__global__ void update_density_grid_sample_ct_sparse_point_cloud(
+	const uint32_t n_elements,
+	const Eigen::Vector3f* sparse_mappoint,
+	uint8_t* density_grid_sample_ct
+)
+{
+	const uint32_t tid = threadIdx.x + blockIdx.x * blockDim.x;
+	if (tid >= n_elements) return;
+
+	Eigen::Vector3f pos = sparse_mappoint[tid];
+	uint32_t mip = mip_from_pos(pos);
+	uint32_t idx = cascaded_grid_idx_at(pos, mip);
+	// No need to consider other threads since if one pos exists then the msb will be set to 1;
+	density_grid_sample_ct[idx+grid_mip_offset(mip)] |= 0x80;
+}
+
+__global__ void generate_grid_map_points_nerf_nonuniform(const uint32_t n_elements, default_rng_t rng, const uint32_t step, BoundingBox aabb, const uint8_t* __restrict__ grid_in, Vector3f* __restrict__ out, uint32_t *counter, uint32_t n_cascades, /*const float* thresh_ptr,*/ const uint32_t thresh) {
 	const uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
 	if (i >= n_elements) return;
 
@@ -474,8 +501,9 @@ __global__ void generate_grid_map_points_nerf_nonuniform(const uint32_t n_elemen
 	idx = ((i+step*n_elements) * 56924617) % (NERF_GRIDSIZE()*NERF_GRIDSIZE()*NERF_GRIDSIZE());
 	idx += level * NERF_GRIDSIZE()*NERF_GRIDSIZE()*NERF_GRIDSIZE();
 
-	// float thresh = *thresh_ptr * 2;
+	// float thresh_val = *thresh_ptr * 2;
 
+	// if (grid_in[idx] > thresh_val) {
 	if (grid_in[idx] > thresh) {
 		// Random position within that cellq
 
@@ -679,7 +707,7 @@ __global__ void triangualtion_ema_grid_samples_nerf(const uint32_t n_elements,
 	const uint32_t count,
 	float* __restrict__ grid_out,
 	const float* __restrict__ grid_in,
-	const uint32_t* __restrict__ grid_sample_count
+	const uint8_t* __restrict__ grid_sample_count
 ) {
 	const uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
 	if (i >= n_elements) return;
@@ -697,9 +725,9 @@ __global__ void triangualtion_ema_grid_samples_nerf(const uint32_t n_elements,
 	// Basically, we want the grid cell turned on as soon as _ANYTHING_ visible is in there.
 
 	float prev_val = grid_out[i]; // contain old_importance * (1.0f + log2f(1.0f + old_grid_sample_count[i]))
-	if (i < 10 || (prev_val > 1000 || importance > 1000)) {
-		printf("[tid: %d] prev_val:%f importance:%f coeff:%f\n", i, prev_val, importance, coeff);
-	}
+	// if (i < 10 || (prev_val > 1000 || importance > 1000)) {
+	// 	printf("[tid: %d] prev_val:%f importance:%f coeff:%f\n", i, prev_val, importance, coeff);
+	// }
 
 	// float val = (prev_val<0.f) ? prev_val : fmaxf(prev_val * decay, importance*coeff);
 	float val = (prev_val<0.f) ? prev_val : fmaxf(prev_val * decay, importance);
@@ -1360,7 +1388,6 @@ __global__ void generate_training_samples_nerf(
 	const TrainingImageMetadata* __restrict__ metadata,
 	const TrainingXForm* training_xforms,
 	const uint8_t* __restrict__ density_grid,
-	uint32_t* __restrict__ density_grid_sample_ct,
 	bool max_level_rand_training,
 	float* __restrict__ max_level_ptr,
 	bool snap_to_pixel_centers,
@@ -1585,7 +1612,7 @@ __global__ void compute_loss_kernel_regress_nerf(
 	// Eigen::Vector2i sharpness_resolution,
 	// float* __restrict__ sharpness_grid,
 	// float* __restrict__ density_grid,
-	// uint32_t* __restrict__ density_grid_sample_ct,
+	// uint8_t* __restrict__ density_grid_sample_ct,
 	const float* __restrict__ mean_density_ptr,
 	// const Eigen::Array3f* __restrict__ exposure,
 	// Eigen::Array3f* __restrict__ exposure_gradient,
@@ -1754,7 +1781,7 @@ __global__ void compute_loss_kernel_train_nerf(
 	Eigen::Vector2i sharpness_resolution,
 	float* __restrict__ sharpness_grid,
 	// float* __restrict__ density_grid,
-	uint32_t* __restrict__ density_grid_sample_ct,
+	uint8_t* __restrict__ density_grid_sample_ct,
 	uint32_t* __restrict__ sample_ct_temp,
 	const float* __restrict__ mean_density_ptr,
 	const Eigen::Array3f* __restrict__ exposure,
@@ -1775,7 +1802,7 @@ __global__ void compute_loss_kernel_train_nerf(
 	float T = 1.f;
 
 	float EPSILON = 1e-4f;
-	float WEIGHT_THRESHOLD = 0.05f;
+	float WEIGHT_THRESHOLD = 0.1f;
 
 	Array3f rgb_ray = Array3f::Zero();
 	Vector3f hitpoint = Vector3f::Zero();
@@ -1813,7 +1840,8 @@ __global__ void compute_loss_kernel_train_nerf(
 			// density_grid_sample_ct updates in generate_training_samples_nerf
 			uint32_t mip = mip_from_dt(dt, pos);
 			uint32_t idx = cascaded_grid_idx_at(pos, mip);
-			proposed_exp_sum += fmin(1<<16, scalbnf(1.0f, density_grid_sample_ct[idx+grid_mip_offset(mip)]));
+			// proposed_exp_sum += fmin(1<<16, scalbnf(1.0f, density_grid_sample_ct[idx+grid_mip_offset(mip)]));
+			proposed_exp_sum += __expf(0.01f * density_grid_sample_ct[idx+grid_mip_offset(mip)]);
 
 			// store in temp to lock the value in density_grid_sample_ct
 			atomicAdd(&sample_ct_temp[idx+grid_mip_offset(mip)], (uint32_t)1);
@@ -2016,6 +2044,8 @@ __global__ void compute_loss_kernel_train_nerf(
 		const float density = network_to_density(float(local_network_output[3]), density_activation);
 		const float alpha = 1.f - __expf(-density * dt);
 		const float weight = alpha * T;
+		const float dwkdsigma = dt * T * __expf(-density * dt);
+
 		rgb_ray2 += weight * rgb;
 		depth_ray2 += weight * depth;
 		T *= (1.f - alpha);
@@ -2023,11 +2053,32 @@ __global__ void compute_loss_kernel_train_nerf(
 		float density_derivative = network_to_density_derivative(float(local_network_output[3]), density_activation);
 
 		// distortion loss
-		float distortion_loss = 0.f;
-		if( k != compacted_numsteps-1){
-			float loss_uni =  weight_arr[k] * weight_arr[k] * (s[k+1] - s[k]) / 3;
-			float loss_bi =  2 * weight_arr[k] * ( (s[k]+s[k+1])/2 * w_prefix[k] - ws_prefix[k]);
-			distortion_loss = density_derivative * dt * (loss_uni + loss_bi);
+		// float distortion_loss = 0.f;
+		// if( k != compacted_numsteps-1){
+		// 	float loss_uni =  weight_arr[k] * weight_arr[k] * (s[k+1] - s[k]) / 3;
+		// 	float loss_bi =  2 * weight_arr[k] * ( (s[k]+s[k+1])/2 * w_prefix[k] - ws_prefix[k]);
+		// 	distortion_loss = density_derivative * dt * (loss_uni + loss_bi);
+		// }
+
+		// distortion loss
+		float ddistLdoutput = 0.f;
+		if( k != compacted_numsteps-1 )
+		{	
+			// ddist_loss/dw_k * dw_k/dsigma * dsigma/doutput
+
+			// 2 * m_k *(sum_{j}^{k-1}w_j - sum_{i=k+1}^{N-1} w_i) + 2 * (sum_{i=k+1}^{N-1} w_i*m_i - sum_{j=0}^{k-1}w_j*m_j)
+			float first_term_derivative = 
+				(s[k] + s[k+1]) * (w_prefix[k-1] - w_prefix[compacted_numsteps-1] + w_prefix[k])
+				+ 2 * (ws_prefix[compacted_numsteps-1] + ws_prefix[k] - ws_prefix[k-1]);
+
+			// 2/3 * w_k * (s_{k+1}-s_{k})
+			float second_term_derivative = 
+				0.666f * weight * (s[k+1] - s[k]);
+
+			ddistLdoutput = (first_term_derivative + second_term_derivative) * dwkdsigma * density_derivative;
+
+			// if (tid == 0)
+			// 	printf("[tid:%d] first_term_derivative:%f second_term_derivative:%f ddistLdoutput:%f\n", tid, first_term_derivative, second_term_derivative, ddistLdoutput);
 		}
 
 
@@ -2037,24 +2088,22 @@ __global__ void compute_loss_kernel_train_nerf(
 			uint32_t mip = mip_from_dt(dt, pos);
 			uint32_t idx = cascaded_grid_idx_at(pos, mip);
 
-			float grid_proposed_hit_prob = fmin(1<<16, scalbnf(1.0f, density_grid_sample_ct[idx+grid_mip_offset(mip)])) * inv_proposed_exp_sum;
+			// float grid_proposed_hit_prob = fmin(1<<16, scalbnf(1.0f, density_grid_sample_ct[idx+grid_mip_offset(mip)])) * inv_proposed_exp_sum;
+			float grid_proposed_hit_prob = __expf(0.01f * density_grid_sample_ct[idx+grid_mip_offset(mip)]) * inv_proposed_exp_sum;
+
 			// penalize only when weight is lower than proposed_prob 
 			// float weight_bound_loss = fmaxf(0.0f, grid_proposed_hit_prob-weight);
 			// float weight_bound_loss = (grid_proposed_hit_prob-weight)*(grid_proposed_hit_prob-weight);
 
-			// times 0.01
-			// Here T = T_k * (1 - alpha_k)
-			// if (grid_proposed_hit_prob-weight > 0.0f)
-			// 	dweight_bound_loss_doutput = -0.02 * (grid_proposed_hit_prob-weight) * T * dt * density_derivative;
-				
-			// times 0.01
-			// dweight_bound_loss_doutput = -0.02 * (grid_proposed_hit_prob-weight) * T * dt * density_derivative;
+			// dweight_bound_loss_doutput = 2 * (weight-grid_proposed_hit_prob) * dwkdsigma * density_derivative;
 
 			// Use this
-			float weight_bound_loss = fmaxf(0.0f, weight-grid_proposed_hit_prob);
+			// float weight_bound_loss = fmaxf(0.0f, weight-grid_proposed_hit_prob);
 			// if (weight_bound_loss > 0.0f)
 			// {
-			// 	dweight_bound_loss_doutput = T * dt * density_derivative;
+			// 	dweight_bound_loss_doutput = dwkdsigma * density_derivative;
+			// 	// dweight_bound_loss_doutput = 2 * dwkdsigma * density_derivative * (weight-grid_proposed_hit_prob);
+			// 	printf("[tid:%d] k:%d grid_proposed_hit_prob:%f weight:%f dweight_bound_loss_doutput:%f\n", tid, k, grid_proposed_hit_prob, weight, dweight_bound_loss_doutput);
 			// }
 
 			// float weight_bound_loss = fmaxf(0.0f, grid_proposed_hit_prob-weight);
@@ -2064,8 +2113,7 @@ __global__ void compute_loss_kernel_train_nerf(
 			// }
 
 
-			if(tid == 0 && weight_bound_loss > 0.0f)
-				printf("[tid:%d] k:%d grid_proposed_hit_prob:%f weight:%f TODO:design loss\n", tid, k, grid_proposed_hit_prob, weight);
+			// if(tid == 0)// && weight_bound_loss > 0.0f)
 		}
 
 		// we know the suffix of this ray compared to where we are up to. note the suffix depends on this step's alpha as suffix = (1-alpha)*(somecolor), so dsuffix/dalpha = -somecolor = -suffix/(1-alpha)
@@ -2093,7 +2141,7 @@ __global__ void compute_loss_kernel_train_nerf(
 		local_dL_doutput[3] =
 			loss_scale * dloss_by_dmlp +
 			loss_scale * dweight_bound_loss_doutput + 
-			loss_scale * distortion_loss * 0.01 + 
+			loss_scale * ddistLdoutput * 0.01 + 
 			(float(local_network_output[3]) < 0.0f ? -output_l1_reg_density : 0.0f) +
 			(float(local_network_output[3]) > -10.0f && depth < near_distance ? 1e-4f : 0.0f);
 
@@ -2162,15 +2210,19 @@ __global__ void compute_loss_kernel_train_nerf(
 
 __global__ void update_density_grid_sample_ct(
 	const uint32_t n_elements,
-	uint32_t* __restrict__ density_grid_sample_ct,
+	uint8_t* __restrict__ density_grid_sample_ct,
 	const uint32_t* __restrict__ sample_ct_temp
 )
 {
 	const uint32_t tid = threadIdx.x + blockIdx.x * blockDim.x;
 
 	if (tid >= n_elements) { return; }
-	if (density_grid_sample_ct[tid] != 0xFFFFFFFF )
-		density_grid_sample_ct[tid] += sample_ct_temp[tid];
+
+	unsigned int sum_value = density_grid_sample_ct[tid] + sample_ct_temp[tid];
+	if (sum_value > 0x000000FF )
+		density_grid_sample_ct[tid] = 0x000000FF;
+	else
+		density_grid_sample_ct[tid] = sum_value & 0x000000FF;
 }
 __global__ void prepare_respective_rgbsimga_gradient(
 	const uint32_t target_batch_size,
@@ -3631,7 +3683,7 @@ void Testbed::update_density_grid_nerf(float decay, uint32_t n_uniform_density_g
 		if (m_training_step == 0) {
 			m_nerf.density_grid_ema_step = 0;
 			CUDA_CHECK_THROW(cudaMemsetAsync(m_nerf.density_grid.data(), 0, sizeof(float)*n_elements, stream));
-			CUDA_CHECK_THROW(cudaMemsetAsync(m_nerf.density_grid_sample_ct.data(), 0, sizeof(uint32_t)*n_elements, stream));
+			CUDA_CHECK_THROW(cudaMemsetAsync(m_nerf.density_grid_sample_ct.data(), 0, sizeof(uint8_t)*n_elements, stream));
 		}
 		// Only cull away empty regions where no camera is looking when the cameras are actually meaningful.
 		if (!m_nerf.training.dataset.has_rays) {
@@ -3644,9 +3696,28 @@ void Testbed::update_density_grid_nerf(float decay, uint32_t n_uniform_density_g
 		} 
 	}
 
+	// Clear the msb before update_density_grid_sample_ct_sparse_point_cloud since the sparse point cloud may be updated in ORB-SLAM
+	linear_kernel(clear_density_grid_sample_ct_msb, 0, stream,
+		n_elements,
+		m_nerf.density_grid_sample_ct.data()
+	);
+
+	// Update density_grid_sample_ct based on sparse point cloud
+	linear_kernel(update_density_grid_sample_ct_sparse_point_cloud, 0, stream,
+		m_nerf.sparse_map_points_positions.size(),
+		m_nerf.sparse_map_points_positions_gpu.data(),
+		m_nerf.density_grid_sample_ct.data()
+	);
+
+	linear_kernel(update_density_grid_sample_ct_sparse_point_cloud, 0, stream,
+		m_nerf.sparse_ref_map_points_positions.size(),
+		m_nerf.sparse_ref_map_points_positions_gpu.data(),
+		m_nerf.density_grid_sample_ct.data()
+	);
+
 	// Calculate the mean of the Nerf triangulation sample
 	CUDA_CHECK_THROW(cudaMemsetAsync(m_nerf.density_grid_sample_ct_mean.data(), 0, sizeof(float), stream));
-	reduce_sum_old(m_nerf.density_grid_sample_ct.data(), [n_elements] __device__ (uint32_t val) { return (float)val/n_elements; }, m_nerf.density_grid_sample_ct_mean.data(), n_elements, stream);
+	reduce_sum_old(m_nerf.density_grid_sample_ct.data(), [n_elements] __device__ (uint8_t val) { return (float)val/n_elements; }, m_nerf.density_grid_sample_ct_mean.data(), n_elements, stream);
 
 	float density_grid_sample_ct_mean_cpu;
 	CUDA_CHECK_THROW(cudaMemcpyAsync(&density_grid_sample_ct_mean_cpu, m_nerf.density_grid_sample_ct_mean.data(), sizeof(float), cudaMemcpyDeviceToHost, stream));
@@ -4391,7 +4462,6 @@ void Testbed::train_nerf_step(uint32_t target_batch_size, uint32_t n_rays_per_ba
 		m_nerf.training.metadata_gpu.data(),
 		m_nerf.training.transforms_gpu.data(),
 		m_nerf.density_grid_bitfield.data(),
-		m_nerf.density_grid_sample_ct.data(),
 		m_max_level_rand_training,
 		max_level,
 		m_nerf.training.snap_to_pixel_centers,

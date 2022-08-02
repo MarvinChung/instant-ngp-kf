@@ -646,7 +646,7 @@ public:
 		float density_grid_mean_cpu;
 		uint32_t density_grid_ema_step = 0;
 
-		tcnn::GPUMemory<uint32_t> density_grid_sample_ct;
+		tcnn::GPUMemory<uint8_t> density_grid_sample_ct;
 		tcnn::GPUMemory<float> density_grid_sample_ct_mean;
 		std::vector<Eigen::Vector3f> map_points_positions;
 		std::vector<Eigen::Vector3f> sparse_map_points_positions;
