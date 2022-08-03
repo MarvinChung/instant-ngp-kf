@@ -20,10 +20,6 @@ if (NOT NGP_DEPLOY)
 endif()
 
 option(NGP_BUILD_WITH_GUI "Build with GUI support (requires GLFW and GLEW)?" ON)
-
-################
-# Not using Vulkan, I currrently have no idea how to copy the dlss for NerfSLAM with CMake using custom_command like below. This will always cause -lnvsdk_ngx not found.
-################
 option(NGP_BUILD_WITH_VULKAN "Build with Vulkan to enable DLSS support?" ON)
 option(NGP_BUILD_WITH_OPTIX "Build with OptiX to enable hardware ray tracing?" ON)
 
@@ -71,6 +67,7 @@ set(CMAKE_CUDA_STANDARD 14)
 set(CMAKE_CUDA_STANDARD_REQUIRED ON)
 set(CMAKE_CUDA_EXTENSIONS OFF)
 set(CUDA_LINK_LIBRARIES_KEYWORD PUBLIC)
+set(CMAKE_CUDA_RUNTIME_LIBRARY Shared)
 
 get_directory_property(NGP_HAS_PARENT PARENT_DIRECTORY)
 
@@ -95,8 +92,8 @@ list(APPEND CUDA_NVCC_FLAGS "--expt-relaxed-constexpr")
 set(TCNN_BUILD_BENCHMARK OFF)
 set(TCNN_BUILD_EXAMPLES OFF)
 add_subdirectory(dependencies/tiny-cuda-nn)
-# include_directories("dependencies/tiny-cuda-nn/include")
-# include_directories("dependencies/tiny-cuda-nn/dependencies")
+
+set(CMAKE_CUDA_ARCHITECTURES ${TCNN_CUDA_ARCHITECTURES})
 
 list(APPEND IncludeList "${CMAKE_CURRENT_SOURCE_DIR}/dependencies/tiny-cuda-nn/include")
 list(APPEND IncludeList "${CMAKE_CURRENT_SOURCE_DIR}/dependencies/tiny-cuda-nn/dependencies")
@@ -107,9 +104,7 @@ if (NGP_BUILD_WITH_GUI)
 	##########
 	find_package(Vulkan)
 
-	# if (Vulkan_FOUND AND NGP_BUILD_WITH_VULKAN)
-	if (false)
-		message(FATAL_ERROR " Debug ! should not come here")
+	if (Vulkan_FOUND AND NGP_BUILD_WITH_VULKAN)
 		set(NGP_VULKAN ON)
 		list(APPEND NGP_DEFINITIONS -DNGP_VULKAN -DGLFW_INCLUDE_VULKAN)
 		# include_directories("${Vulkan_INCLUDE_DIRS}")
@@ -142,8 +137,6 @@ if (NGP_BUILD_WITH_GUI)
 			endif()
 		else()
 			link_directories("${CMAKE_CURRENT_SOURCE_DIR}/dependencies/dlss/lib/Linux_x86_64")
-			
-			# find_library(nvsdk_ngx "${CMAKE_CURRENT_SOURCE_DIR}/dependencies/dlss/lib/Linux_x86_64")
 			set(NGP_LIBRARIES ${NGP_LIBRARIES} nvsdk_ngx)
 		endif()
 	else()
