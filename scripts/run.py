@@ -30,7 +30,11 @@ def parse_args():
 	parser = argparse.ArgumentParser(description="Run neural graphics primitives testbed with additional configuration & output options")
 
 	parser.add_argument("--scene", "--training_data", default="", help="The scene to load. Can be the scene's name or a full path to the training data.")
+<<<<<<< HEAD
 	parser.add_argument("--mode", default="", const="nerf", nargs="?", choices=["nerf", "nerfslam", "sdf", "image", "volume"], help="Mode can be 'nerf', 'sdf', 'image' or 'volume'. Inferred from the scene if unspecified.")
+=======
+	parser.add_argument("--mode", default="", const="nerf", nargs="?", choices=["nerf", "sdf", "image", "volume"], help="Mode can be 'nerf', 'sdf', 'image' or 'volume'. Inferred from the scene if unspecified.")
+>>>>>>> a463dae3bee74d42a35065148d138bf6ff562895
 	parser.add_argument("--network", default="", help="Path to the network config. Uses the scene's default if unspecified.")
 
 	parser.add_argument("--load_snapshot", default="", help="Load this snapshot before training. recommended extension: .msgpack")
@@ -46,7 +50,11 @@ def parse_args():
 	parser.add_argument("--screenshot_dir", default="", help="Which directory to output screenshots to.")
 	parser.add_argument("--screenshot_spp", type=int, default=16, help="Number of samples per pixel in screenshots.")
 
+<<<<<<< HEAD
 	parser.add_argument("--video_camera_path", default="", help="The camera path to render.")
+=======
+	parser.add_argument("--video_camera_path", default="", help="The camera path to render, e.g., base_cam.json.")
+>>>>>>> a463dae3bee74d42a35065148d138bf6ff562895
 	parser.add_argument("--video_camera_smoothing", action="store_true", help="Applies additional smoothing to the camera trajectory with the caveat that the endpoint of the camera path may not be reached.")
 	parser.add_argument("--video_fps", type=int, default=60, help="Number of frames per second.")
 	parser.add_argument("--video_n_seconds", type=int, default=1, help="Number of seconds the rendered video should be long.")
@@ -64,7 +72,7 @@ def parse_args():
 	parser.add_argument("--n_steps", type=int, default=-1, help="Number of steps to train for before quitting.")
 	parser.add_argument("--second_window", action="store_true", help="Open a second window containing a copy of the main output.")
 
-	parser.add_argument("--sharpen", default=0, help="Set amount of sharpening applied to NeRF training images.")
+	parser.add_argument("--sharpen", default=0, help="Set amount of sharpening applied to NeRF training images. Range 0.0 to 1.0.")
 
 
 	args = parser.parse_args()
@@ -357,4 +365,8 @@ if __name__ == "__main__":
 			write_image(f"tmp/{i:04d}.jpg", np.clip(frame * 2**args.exposure, 0.0, 1.0), quality=100)
 
 		os.system(f"ffmpeg -y -framerate {args.video_fps} -i tmp/%04d.jpg -c:v libx264 -pix_fmt yuv420p {args.video_output}")
+<<<<<<< HEAD
 		shutil.rmtree("tmp")
+=======
+		shutil.rmtree("tmp")
+>>>>>>> a463dae3bee74d42a35065148d138bf6ff562895
