@@ -5149,7 +5149,7 @@ void Testbed::compute_mesh_vertex_colors() {
 	m_mesh.vert_colors.resize(n_verts);
 	m_mesh.vert_colors.memset(0);
 
-	if (m_testbed_mode == ETestbedMode::Nerf) {
+	if (m_testbed_mode == ETestbedMode::Nerf || m_testbed_mode == ETestbedMode::NerfSlam ) {
 		const float* extra_dims_gpu = get_inference_extra_dims(m_inference_stream);
 
 		const uint32_t floats_per_coord = sizeof(NerfCoordinate) / sizeof(float) + m_nerf_network->n_extra_dims();
@@ -5170,7 +5170,7 @@ GPUMemory<float> Testbed::get_density_on_grid(Vector3i res3d, const BoundingBox&
 	GPUMemory<float> density(n_elements);
 
 	const uint32_t batch_size = std::min(n_elements, 1u<<20);
-	bool nerf_mode = m_testbed_mode == ETestbedMode::Nerf;
+	bool nerf_mode = (m_testbed_mode == ETestbedMode::Nerf) || (m_testbed_mode == ETestbedMode::NerfSlam);
 
 	const uint32_t padded_output_width = nerf_mode ? m_nerf_network->padded_density_output_width() : m_network->padded_output_width();
 
@@ -5243,7 +5243,6 @@ GPUMemory<Eigen::Array4f> Testbed::get_rgba_on_grid(Vector3i res3d, Eigen::Vecto
 
 int Testbed::marching_cubes(Vector3i res3d, const BoundingBox& aabb, float thresh) {
 
-	std::cout << "marching_cubes" << std::endl;
 	res3d.x() = next_multiple((unsigned int)res3d.x(), 16u);
 	res3d.y() = next_multiple((unsigned int)res3d.y(), 16u);
 	res3d.z() = next_multiple((unsigned int)res3d.z(), 16u);
@@ -5252,26 +5251,18 @@ int Testbed::marching_cubes(Vector3i res3d, const BoundingBox& aabb, float thres
 		thresh = m_mesh.thresh;
 	}
 
-	std::cout << "A" << std::endl;
-
 	GPUMemory<float> density = get_density_on_grid(res3d, aabb);
 	marching_cubes_gpu(m_inference_stream, m_render_aabb, res3d, thresh, density, m_mesh.verts, m_mesh.indices);
 
 	uint32_t n_verts = (uint32_t)m_mesh.verts.size();
 	m_mesh.verts_gradient.resize(n_verts);
 
-	std::cout << "B" << std::endl;
-
 	m_mesh.trainable_verts = std::make_shared<TrainableBuffer<3, 1, float>>(Matrix<int, 1, 1>{(int)n_verts});
 	m_mesh.verts_gradient.copy_from_device(m_mesh.verts); // Make sure the vertices don't get destroyed in the initialization
-
-	std::cout << "C" << std::endl;
 
 	pcg32 rnd{m_seed};
 	m_mesh.trainable_verts->initialize_params(rnd, (float*)m_mesh.verts.data(), (float*)m_mesh.verts.data(), (float*)m_mesh.verts.data(), (float*)m_mesh.verts.data(), (float*)m_mesh.verts_gradient.data());
 	m_mesh.verts.copy_from_device(m_mesh.verts_gradient);
-
-	std::cout << "D" << std::endl;
 
 	m_mesh.verts_optimizer.reset(create_optimizer<float>({
 		{"otype", "Adam"},
@@ -5282,12 +5273,7 @@ int Testbed::marching_cubes(Vector3i res3d, const BoundingBox& aabb, float thres
 
 	m_mesh.verts_optimizer->allocate(m_mesh.trainable_verts);
 
-	std::cout << "E" << std::endl;
-
 	compute_mesh_1ring(m_mesh.verts, m_mesh.indices, m_mesh.verts_smoothed, m_mesh.vert_normals);
-
-	std::cout << "F" << std::endl;
-
 	compute_mesh_vertex_colors();
 
 	return (int)(m_mesh.indices.size()/3);
