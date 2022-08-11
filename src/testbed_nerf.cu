@@ -3722,7 +3722,7 @@ void Testbed::update_density_grid_nerf(float decay, uint32_t n_uniform_density_g
 	float density_grid_sample_ct_mean_cpu;
 	CUDA_CHECK_THROW(cudaMemcpyAsync(&density_grid_sample_ct_mean_cpu, m_nerf.density_grid_sample_ct_mean.data(), sizeof(float), cudaMemcpyDeviceToHost, stream));
 
-	std::cout << "[testbed_nerf] density_grid_sample_ct_mean: " << density_grid_sample_ct_mean_cpu << std::endl;
+	// std::cout << "[testbed_nerf] density_grid_sample_ct_mean: " << density_grid_sample_ct_mean_cpu << std::endl;
 
 	// Insert the points that should be surface to the visualization
 	if(m_nerf.map_points_positions.size() < 300000){
@@ -3830,7 +3830,7 @@ void Testbed::update_density_grid_mean_and_bitfield(cudaStream_t stream) {
 
 	assert(!isinf(m_nerf.density_grid_mean_cpu));
 
-	std::cout << "[testbed_nerf.cu] denisty_mean: " << m_nerf.density_grid_mean_cpu << std::endl;
+	// std::cout << "[testbed_nerf.cu] denisty_mean: " << m_nerf.density_grid_mean_cpu << std::endl;
 
 }
 
