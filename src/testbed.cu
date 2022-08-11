@@ -287,7 +287,13 @@ void Testbed::compute_and_save_marching_cubes_mesh(const char* filename, Vector3
 	if (aabb.is_empty()) {
 		aabb = (m_testbed_mode == ETestbedMode::Nerf || m_testbed_mode == ETestbedMode::NerfSlam) ? m_render_aabb : m_aabb;
 	}
+
+	std::cout << "compute_and_save_marching_cubes_mesh" << std::endl;
+
 	marching_cubes(res3d, aabb, thresh);
+
+	std::cout << "finish marching_cubes" << std::endl;
+
 	save_mesh(m_mesh.verts, m_mesh.vert_normals, m_mesh.vert_colors, m_mesh.indices, filename, unwrap_it, m_nerf.training.dataset.scale, m_nerf.training.dataset.offset);
 }
 
@@ -1011,24 +1017,6 @@ void Testbed::imgui() {
 	ImGui::End();
 }
 
-void Testbed::add_sparse_point_cloud(std::vector<Eigen::Vector3f>& sparse_map_points_positions, std::vector<Eigen::Vector3f>& sparse_ref_map_points_positions) {
-	CUDA_CHECK_THROW(cudaDeviceSynchronize());
-	m_nerf.sparse_map_points_positions.clear();
-	m_nerf.sparse_ref_map_points_positions.clear();
-
-	for(auto &map_point : sparse_map_points_positions) {
-		m_nerf.sparse_map_points_positions.push_back(m_nerf.training.dataset.slam_point_to_ngp(map_point));
-	}
-
-	for(auto &map_point : sparse_ref_map_points_positions) {
-		m_nerf.sparse_ref_map_points_positions.push_back(m_nerf.training.dataset.slam_point_to_ngp(map_point));
-	}
-
-	m_nerf.sparse_map_points_positions_gpu.resize_and_copy_from_host(m_nerf.sparse_map_points_positions);
-	m_nerf.sparse_ref_map_points_positions_gpu.resize_and_copy_from_host(m_nerf.sparse_ref_map_points_positions);
-
-}
-
 void Testbed::visualize_map_points(ImDrawList* list, const Matrix<float, 4, 4>& world2proj) {
 
 	// std::cout << "[testbed.cu] visualize nerf triangulation map points number:" << m_nerf.map_points_positions.size() << std::endl;
@@ -1498,6 +1486,24 @@ void Testbed::LocalNerfBundleAdjustment(nlohmann::json frame, std::vector<Eigen:
     regress_nerf(local_dataset, ngp_map_points, m_training_stream);
 }
 */
+
+void Testbed::add_sparse_point_cloud(std::vector<Eigen::Vector3f>& sparse_map_points_positions, std::vector<Eigen::Vector3f>& sparse_ref_map_points_positions) {
+	CUDA_CHECK_THROW(cudaDeviceSynchronize());
+	m_nerf.sparse_map_points_positions.clear();
+	m_nerf.sparse_ref_map_points_positions.clear();
+
+	for(auto &map_point : sparse_map_points_positions) {
+		m_nerf.sparse_map_points_positions.push_back(m_nerf.training.dataset.slam_point_to_ngp(map_point));
+	}
+
+	for(auto &map_point : sparse_ref_map_points_positions) {
+		m_nerf.sparse_ref_map_points_positions.push_back(m_nerf.training.dataset.slam_point_to_ngp(map_point));
+	}
+
+	m_nerf.sparse_map_points_positions_gpu.resize_and_copy_from_host(m_nerf.sparse_map_points_positions);
+	m_nerf.sparse_ref_map_points_positions_gpu.resize_and_copy_from_host(m_nerf.sparse_ref_map_points_positions);
+
+}
 
 void Testbed::update_training_image(nlohmann::json frame) 
 {
