@@ -1219,7 +1219,7 @@ inline __device__ Vector2f nerf_random_image_pos_training(default_rng_t& rng, co
 	return xy;
 }
 
-inline __device__ uint32_t image_idx(uint32_t base_idx, uint32_t n_rays, uint32_t n_rays_total, uint32_t n_training_images, const float* __restrict__ cdf = nullptr, float* __restrict__ pdf = nullptr) {
+inline __device__ uint32_t image_idx(uint32_t base_idx, uint32_t n_rays, uint32_t n_rays_total, uint32_t n_training_images, uint32_t train_window_size, const float* __restrict__ cdf = nullptr, float* __restrict__ pdf = nullptr) {
 	if (cdf) {
 		float sample = ld_random_val(base_idx + n_rays_total, 0xdeadbeef);
 		// float sample = random_val(base_idx + n_rays_total);
@@ -1239,7 +1239,13 @@ inline __device__ uint32_t image_idx(uint32_t base_idx, uint32_t n_rays, uint32_
 	if (pdf) {
 		*pdf = 1.0f;
 	}
-	return (((base_idx + n_rays_total) * n_training_images) / n_rays) % n_training_images;
+	// return (((base_idx + n_rays_total) * n_training_images) / n_rays) % n_training_images;
+	
+	train_window_size = (n_training_images > train_window_size)? train_window_size : n_training_images;
+	uint32_t window_idx = (((base_idx + n_rays_total) * n_training_images) / n_rays) % train_window_size;
+	// printf("[image_idx] train_window_size:%d window_idx:%d n_training_images:%d\n", train_window_size, window_idx, n_training_images);
+	return (n_training_images - window_idx - 1);
+
 }
 
 __global__ void generate_mappoints_samples_nerf(
@@ -1385,6 +1391,7 @@ __global__ void generate_training_samples_nerf(
 	uint32_t* __restrict__ numsteps_out,
 	PitchedPtr<NerfCoordinate> coords_out,
 	const uint32_t n_training_images,
+	const uint32_t train_window_size,
 	const TrainingImageMetadata* __restrict__ metadata,
 	const TrainingXForm* training_xforms,
 	const uint8_t* __restrict__ density_grid,
@@ -1406,7 +1413,7 @@ __global__ void generate_training_samples_nerf(
 	const uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
 	if (i >= n_rays) return;
 
-	uint32_t img = image_idx(i, n_rays, n_rays_total, n_training_images, cdf_img);
+	uint32_t img = image_idx(i, n_rays, n_rays_total, n_training_images, train_window_size, cdf_img);
 	Eigen::Vector2i resolution = metadata[img].resolution;
 
 	rng.advance(i * N_MAX_RANDOM_SAMPLES_PER_RAY());
@@ -1753,6 +1760,7 @@ __global__ void compute_loss_kernel_train_nerf(
 	bool train_with_random_bg_color,
 	bool train_in_linear_colors,
 	const uint32_t n_training_images,
+	const uint32_t train_window_size, 
 	const TrainingImageMetadata* __restrict__ metadata,
 	const tcnn::network_precision_t* network_output,
 	uint32_t* __restrict__ numsteps_counter,
@@ -1873,7 +1881,7 @@ __global__ void compute_loss_kernel_train_nerf(
 	float inv_proposed_exp_sum = 1.0f/proposed_exp_sum;
 
 	float img_pdf = 1.0f;
-	uint32_t img = image_idx(ray_idx, n_rays, n_rays_total, n_training_images, cdf_img, &img_pdf);
+	uint32_t img = image_idx(ray_idx, n_rays, n_rays_total, n_training_images, train_window_size, cdf_img, &img_pdf);
 
 	Eigen::Vector2i resolution = metadata[img].resolution;
 
@@ -2295,6 +2303,7 @@ __global__ void compute_cam_gradient_train_nerf_first_order_optimizer(
 	Vector3f* cam_pos_gradient,
 	Vector3f* cam_rot_gradient,
 	const uint32_t n_training_images,
+	const uint32_t train_window_size, 
 	const TrainingImageMetadata* __restrict__ metadata,
 	const uint32_t* __restrict__ ray_indices_in,
 	const Ray* __restrict__ rays_in_unnormalized,
@@ -2327,7 +2336,7 @@ __global__ void compute_cam_gradient_train_nerf_first_order_optimizer(
 	// Must be same seed as above to obtain the same
 	// background color.
 	uint32_t ray_idx = ray_indices_in[i];
-	uint32_t img = image_idx(ray_idx, n_rays, n_rays_total, n_training_images, cdf_img);
+	uint32_t img = image_idx(ray_idx, n_rays, n_rays_total, n_training_images, train_window_size, cdf_img);
 	Eigen::Vector2i resolution = metadata[img].resolution;
 
 	const Matrix<float, 3, 4>& xform = training_xforms[img].start;
@@ -2409,6 +2418,7 @@ __global__ void compute_cam_gradient_train_nerf_gauss_newton_optimizer(
 	const Eigen::Vector3f* __restrict__ loss_vector,
 	const Eigen::Matrix<float, 6, 1>* __restrict__ de_dlogits_vector,
 	const uint32_t n_training_images,
+	const uint32_t train_window_size, 
 	const TrainingImageMetadata* __restrict__ metadata,
 	const uint32_t* __restrict__ ray_indices_in,
 	const Ray* __restrict__ rays_in_unnormalized,
@@ -2453,7 +2463,7 @@ __global__ void compute_cam_gradient_train_nerf_gauss_newton_optimizer(
 	// Must be same seed as above to obtain the same
 	// background color.
 	uint32_t ray_idx = ray_indices_in[i];
-	uint32_t img = image_idx(ray_idx, n_rays, n_rays_total, n_training_images, cdf_img);
+	uint32_t img = image_idx(ray_idx, n_rays, n_rays_total, n_training_images, train_window_size, cdf_img);
 	Eigen::Vector2i resolution = metadata[img].resolution;
 
 	const Matrix<float, 3, 4>& xform = training_xforms[img].start;
@@ -2607,6 +2617,7 @@ __global__ void compute_extra_dims_gradient_train_nerf(
 	float* extra_dims_gradient,
 	uint32_t n_extra_dims,
 	const uint32_t n_training_images,
+	const uint32_t train_window_size, 
 	const uint32_t* __restrict__ ray_indices_in,
 	uint32_t* __restrict__ numsteps_in,
 	PitchedPtr<NerfCoordinate> coords_gradient,
@@ -2626,7 +2637,7 @@ __global__ void compute_extra_dims_gradient_train_nerf(
 	// Must be same seed as above to obtain the same
 	// background color.
 	uint32_t ray_idx = ray_indices_in[i];
-	uint32_t img = image_idx(ray_idx, n_rays, n_rays_total, n_training_images, cdf_img);
+	uint32_t img = image_idx(ray_idx, n_rays, n_rays_total, n_training_images, train_window_size, cdf_img);
 
 	extra_dims_gradient += n_extra_dims * img;
 
@@ -4459,6 +4470,7 @@ void Testbed::train_nerf_step(uint32_t target_batch_size, uint32_t n_rays_per_ba
 		numsteps,
 		PitchedPtr<NerfCoordinate>((NerfCoordinate*)coords, 1, 0, extra_stride),
 		m_nerf.training.n_images_for_training,
+		m_nerf.training.train_window_size,
 		m_nerf.training.metadata_gpu.data(),
 		m_nerf.training.transforms_gpu.data(),
 		m_nerf.density_grid_bitfield.data(),
@@ -4509,6 +4521,7 @@ void Testbed::train_nerf_step(uint32_t target_batch_size, uint32_t n_rays_per_ba
 		m_nerf.training.random_bg_color,
 		m_nerf.training.linear_colors,
 		m_nerf.training.n_images_for_training,
+		m_nerf.training.train_window_size,
 		m_nerf.training.metadata_gpu.data(),
 		mlp_out,
 		compacted_counter,
@@ -4599,6 +4612,7 @@ void Testbed::train_nerf_step(uint32_t target_batch_size, uint32_t n_rays_per_ba
 			m_nerf.training.extra_dims_gradient_gpu.data(),
 			m_nerf.training.dataset.n_extra_dims(),
 			m_nerf.training.n_images_for_training,
+			m_nerf.training.train_window_size,
 			ray_indices,
 			numsteps,
 			PitchedPtr<NerfCoordinate>((NerfCoordinate*)coords_gradient, 1, 0, extra_stride),
@@ -4623,6 +4637,7 @@ void Testbed::train_nerf_step(uint32_t target_batch_size, uint32_t n_rays_per_ba
 				m_nerf.training.optimize_extrinsics ? m_nerf.training.cam_pos_gradient_gpu.data() : nullptr,
 				m_nerf.training.optimize_extrinsics ? m_nerf.training.cam_rot_gradient_gpu.data() : nullptr,
 				m_nerf.training.n_images_for_training,
+				m_nerf.training.train_window_size,
 				m_nerf.training.metadata_gpu.data(),
 				ray_indices,
 				rays_unnormalized,
@@ -4743,6 +4758,7 @@ void Testbed::train_nerf_step(uint32_t target_batch_size, uint32_t n_rays_per_ba
 					loss_vector,
 					de_dlogits_vector,
 					m_nerf.training.n_images_for_training,
+					m_nerf.training.train_window_size,
 					m_nerf.training.metadata_gpu.data(),
 					ray_indices,
 					rays_unnormalized,

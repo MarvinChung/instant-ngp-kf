@@ -523,6 +523,8 @@ public:
 			NerfDataset dataset;
 			int n_images_for_training = 0; // how many images to train from, as a high watermark compared to the dataset size
 			int n_images_for_training_prev = 0; // how many images we saw last time at the end of the train function
+			uint32_t train_window_size = 0;  // the number of the latest image can be train
+
 
 			struct ErrorMap {
 				tcnn::GPUMemory<float> data;

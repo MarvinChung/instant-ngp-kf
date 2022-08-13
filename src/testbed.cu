@@ -2367,6 +2367,17 @@ void Testbed::train(uint32_t batch_size) {
 		if (m_nerf.training.n_images_for_training == 0) {
 			throw std::runtime_error{"No image in the dataset. Perhaps no frame in the transform.json, then you need to call add_training_image."};
 		}
+
+		// Only train the latest 10 frames
+		m_nerf.training.train_window_size = std::min(10, m_nerf.training.n_images_for_training);
+	}
+	else if (m_testbed_mode == ETestbedMode::Nerf) {
+		m_nerf.training.train_window_size = m_nerf.training.n_images_for_training;
+	}
+
+	if (m_nerf.training.train_window_size == 0)
+	{
+		throw std::runtime_error{"Train window size is 0. No images can be train"};
 	}
 
 	uint32_t n_prep_to_skip = (m_testbed_mode == ETestbedMode::Nerf || m_testbed_mode == ETestbedMode::NerfSlam) ? tcnn::clamp(m_training_step / 16u, 1u, 16u) : 1u;
@@ -2409,7 +2420,7 @@ void Testbed::train(uint32_t batch_size) {
 		switch (m_testbed_mode) {
 			case ETestbedMode::NerfSlam: 
 			case ETestbedMode::Nerf:   
-									   train_nerf(batch_size, get_loss_scalar, m_training_stream); break;
+									   train_nerf(batch_size,get_loss_scalar, m_training_stream); break;
 			case ETestbedMode::Sdf:    train_sdf(batch_size, get_loss_scalar, m_training_stream); break;
 			case ETestbedMode::Image:  train_image(batch_size, get_loss_scalar, m_training_stream); break;
 			case ETestbedMode::Volume: train_volume(batch_size, get_loss_scalar, m_training_stream); break;
