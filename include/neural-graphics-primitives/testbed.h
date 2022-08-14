@@ -601,7 +601,7 @@ public:
 			bool train_envmap = false;
 
 			bool optimize_distortion = false;
-			bool optimize_extrinsics = true; //false; 
+			bool optimize_extrinsics = false; 
 			EExtrinsicOptimizer extrinsic_optimizer_mode = EExtrinsicOptimizer::Adam; // EExtrinsicOptimizer::GaussNewton; // 
 			bool optimize_extra_dims = false;
 			bool optimize_focal_length = false;
