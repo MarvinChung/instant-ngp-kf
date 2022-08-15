@@ -44,11 +44,6 @@ public:
 		m_state.variable -= actual_learning_rate * m_state.first_moment.cwiseQuotient(m_state.second_moment.cwiseSqrt() + T::Constant(m_state.variable.size(), m_hparams.epsilon));
 	}
 
-	void translate(const T& delta_x) {
-		++m_state.iter;
-		m_state.variable += delta_x;
-	}
-
 	uint32_t step() const {
 		return m_state.iter;
 	}
@@ -63,6 +58,10 @@ public:
 
 	const T& variable() const {
 		return m_state.variable;
+	}
+
+	void clear_variable() {
+		m_state.variable = T::Zero();
 	}
 
 	void reset_state(const T& zero = T::Zero()) {
@@ -129,21 +128,6 @@ public:
 		m_state.variable = result.axis() * result.angle();
 	}
 
-	void rotate(const Eigen::Vector3f& delta_r) {
-		++m_state.iter;
-
-		Eigen::Vector3f rot = delta_r;
-		float rot_len = delta_r.norm();
-		float var_len = variable().norm();
-
-		static const Eigen::Vector3f Z = {0.0f, 0.0f, 1.0f};
-
-		Eigen::AngleAxisf result;
-		Eigen::Matrix3f mat = Eigen::AngleAxisf(rot_len, rot_len > 0 ? rot/rot_len : Z).toRotationMatrix() * Eigen::AngleAxisf(var_len, var_len > 0 ? variable()/var_len : Z).toRotationMatrix();
-		result.fromRotationMatrix(mat);
-		m_state.variable = result.axis() * result.angle();
-	}
-
 	uint32_t step() const {
 		return m_state.iter;
 	}
@@ -154,6 +138,10 @@ public:
 
 	const Eigen::Vector3f& variable() const {
 		return m_state.variable;
+	}
+
+	void clear_variable() {
+		m_state.variable = Eigen::Vector3f::Zero();
 	}
 
 	void reset_state() {

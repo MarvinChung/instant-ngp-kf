@@ -376,12 +376,8 @@ public:
 
 	double calculate_iou(uint32_t n_samples=128*1024*1024, float scale_existing_results_factor=0.0, bool blocking=true, bool force_use_octree = true);
 	void draw_visualizations(ImDrawList* list, const Eigen::Matrix<float, 3, 4>& camera_matrix);
-	TrainingXForm get_posterior_extrinsic(int Id);
-	std::map<int, TrainingXForm> get_posterior_extrinsic();
-	// void add_map_points(std::vector<Eigen::Vector3f>& map_points, std::vector<Eigen::Vector3f>& ref_map_points);
-	void LocalNerfBundleAdjustment(nlohmann::json frame, std::vector<Eigen::Vector3f>& vLocalMapPoints, uint8_t *img, uint16_t *depth=nullptr, uint8_t *alpha=nullptr, uint8_t *mask=nullptr);
-	void update_training_image(nlohmann::json frame);
-	void add_training_image(nlohmann::json frame, uint8_t *img, uint16_t *depth=nullptr, uint8_t *alpha=nullptr, uint8_t *mask=nullptr);
+	void update_training_image();
+	TrainingXForm* add_training_image(nlohmann::json frame, uint8_t *img, uint16_t *depth=nullptr, uint8_t *alpha=nullptr, uint8_t *mask=nullptr);
 	void train_and_render(bool skip_rendering);
 	filesystem::path training_data_path() const;
 	void init_window(int resw, int resh, bool hidden = false);
@@ -593,8 +589,8 @@ public:
 			bool train_envmap = false;
 
 			bool optimize_distortion = false;
-			bool optimize_extrinsics = false; 
-			EExtrinsicOptimizer extrinsic_optimizer_mode = EExtrinsicOptimizer::Adam; // EExtrinsicOptimizer::GaussNewton; // 
+			bool optimize_extrinsics = false; //true 
+			EExtrinsicOptimizer extrinsic_optimizer_mode = EExtrinsicOptimizer::Adam;  
 			bool optimize_extra_dims = false;
 			bool optimize_focal_length = false;
 			bool optimize_exposure = false;
