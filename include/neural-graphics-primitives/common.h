@@ -153,10 +153,9 @@ enum class ETestbedMode : int {
 
 enum class EExtrinsicOptimizer : int {
 	Adam,
-	GaussNewton,
 };
 
-static constexpr const char* ExtrinsicOptimizerStr = "Adam\0GaussNewton\0\0";
+static constexpr const char* ExtrinsicOptimizerStr = "Adam\0\0";
 
 enum class ESDFGroundTruthMode : int {
 	RaytracedMesh,

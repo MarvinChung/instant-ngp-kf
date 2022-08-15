@@ -1528,9 +1528,6 @@ void Testbed::add_training_image(nlohmann::json frame, uint8_t *img, uint16_t *d
 	m_nerf.training.cam_pos_gradient.resize(m_nerf.training.dataset.n_images, Vector3f::Zero());
 	m_nerf.training.cam_pos_gradient_gpu.resize_and_copy_from_host(m_nerf.training.cam_pos_gradient);
 
-	m_nerf.training.cam_pos_hessian.resize(m_nerf.training.dataset.n_images, Eigen::Matrix3f::Zero());
-	m_nerf.training.cam_pos_hessian_gpu.resize_and_copy_from_host(m_nerf.training.cam_pos_hessian);
-
 	m_nerf.training.cam_exposure.resize(m_nerf.training.dataset.n_images, AdamOptimizer<Array3f>(1e-3f));
 	m_nerf.training.cam_pos_offset.resize(m_nerf.training.dataset.n_images, AdamOptimizer<Vector3f>(1e-4f));
 	m_nerf.training.cam_rot_offset.resize(m_nerf.training.dataset.n_images, RotationAdamOptimizer(1e-4f));
@@ -1538,9 +1535,6 @@ void Testbed::add_training_image(nlohmann::json frame, uint8_t *img, uint16_t *d
 
 	m_nerf.training.cam_rot_gradient.resize(m_nerf.training.dataset.n_images, Vector3f::Zero());
 	m_nerf.training.cam_rot_gradient_gpu.resize_and_copy_from_host(m_nerf.training.cam_rot_gradient);
-
-	m_nerf.training.cam_rot_hessian.resize(m_nerf.training.dataset.n_images, Eigen::Matrix3f::Zero());
-	m_nerf.training.cam_rot_hessian_gpu.resize_and_copy_from_host(m_nerf.training.cam_rot_hessian);
 
 	m_nerf.training.cam_exposure_gradient.resize(m_nerf.training.dataset.n_images, Array3f::Zero());
 	m_nerf.training.cam_exposure_gpu.resize_and_copy_from_host(m_nerf.training.cam_exposure_gradient);
