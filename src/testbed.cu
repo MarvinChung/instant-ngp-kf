@@ -369,7 +369,7 @@ void Testbed::imgui() {
 			snprintf(path_filename_buf, sizeof(path_filename_buf), "%s", get_filename_in_data_path_with_suffix(m_data_path, m_network_config_path, "_cam.json").c_str());
 		}
 
-		if (m_camera_path.imgui(path_filename_buf, m_render_ms.val(), m_camera, m_slice_plane_z, m_scale, fov(), m_dof, m_bounding_radius, !m_nerf.training.dataset.xforms.empty() ? m_nerf.training.dataset.xforms[0].start : Matrix<float, 3, 4>::Identity())) {
+		if (m_camera_path.imgui(path_filename_buf, m_render_ms.val(), m_camera, m_slice_plane_z, m_scale, fov(), m_dof, m_bounding_radius, !m_nerf.training.dataset.xforms.empty() ? m_nerf.training.dataset.xforms[0]->start : Matrix<float, 3, 4>::Identity())) {
 			if (m_camera_path.m_update_cam_from_path) {
 				set_camera_from_time(m_camera_path.m_playtime);
 				if (read > 1) {
@@ -1042,11 +1042,11 @@ void Testbed::visualize_nerf_cameras(ImDrawList* list, const Matrix<float, 4, 4>
 	for (int i = 0; i < m_nerf.training.n_images_for_training; ++i) {
 		auto res = m_nerf.training.dataset.metadata[i].resolution;
 		float aspect = float(res.x())/float(res.y());
-		visualize_nerf_camera(list, world2proj, m_nerf.training.dataset.xforms[i].start, aspect, 0x40ffff40);
-		visualize_nerf_camera(list, world2proj, m_nerf.training.dataset.xforms[i].end, aspect, 0x40ffff40);
+		visualize_nerf_camera(list, world2proj, m_nerf.training.dataset.xforms[i]->start, aspect, 0x40ffff40);
+		visualize_nerf_camera(list, world2proj, m_nerf.training.dataset.xforms[i]->end, aspect, 0x40ffff40);
 		visualize_nerf_camera(list, world2proj, m_nerf.training.transforms[i].start, aspect, 0x80ffffff);
 
-		add_debug_line(list, world2proj, m_nerf.training.dataset.xforms[i].start.col(3), m_nerf.training.transforms[i].start.col(3), 0xffff40ff); // 1% loss change offset
+		add_debug_line(list, world2proj, m_nerf.training.dataset.xforms[i]->start.col(3), m_nerf.training.transforms[i].start.col(3), 0xffff40ff); // 1% loss change offset
 
 		// Visualize near distance
 		add_debug_line(list, world2proj, m_nerf.training.transforms[i].start.col(3), m_nerf.training.transforms[i].start.col(3) + m_nerf.training.transforms[i].start.col(2) * m_nerf.training.near_distance, 0x20ffffff);
@@ -1436,57 +1436,6 @@ void Testbed::draw_gui() {
 }
 #endif //NGP_GUI
 
-// void Testbed::add_map_points(std::vector<Eigen::Vector3f>& map_points, std::vector<Eigen::Vector3f>& ref_map_points){
-// 	CUDA_CHECK_THROW(cudaDeviceSynchronize());
-// }
-
-/*
-void Testbed::LocalNerfBundleAdjustment(nlohmann::json frame, std::vector<Eigen::Vector3f>& vLocalMapPoints, uint8_t *img, uint16_t *depth, uint8_t *alpha, uint8_t *mask)
-{
-	// Regress Nerf Model with sparse point cloud and return optimized transform matrix.
-
-	CUDA_CHECK_THROW(cudaDeviceSynchronize());
-	CUDA_CHECK_THROW(cudaStreamSynchronize(m_training_stream));
-
-    std::cout << "[testbed.cu] start LocalNerfBundleAdjustment" << std::endl;
-
-	NerfDataset local_dataset;
-	if (!m_data_path.empty()) {
-		std::vector<fs::path> json_paths;
-		if (m_data_path.is_directory()) {
-			for (const auto& path : fs::directory{m_data_path}) {
-				if (path.is_file() && equals_case_insensitive(path.extension(), "json")) {
-					json_paths.emplace_back(path);
-				}
-			}
-		} else if (equals_case_insensitive(m_data_path.extension(), "msgpack")) {
-			load_snapshot(m_data_path.str());
-			set_train(false);
-			return;
-		} else if (equals_case_insensitive(m_data_path.extension(), "json")) {
-			json_paths.emplace_back(m_data_path);
-		} else {
-			throw std::runtime_error{"NeRF data path must either be a json file or a directory containing json files."};
-		}
-
-		local_dataset = ngp::load_nerf(json_paths, m_nerf.sharpen);
-	}
-	else{
-		throw std::runtime_error{"NeRF data path must be set before LocalNerfBundleAdjustment."};
-	}
-
-	local_dataset.add_training_image(frame, img, depth, alpha, mask);
-
-    std::vector<Eigen::Vector3f> ngp_map_points(vLocalMapPoints.size());
-    for(int i = 0; i < vLocalMapPoints.size(); i++) {
-    	ngp_map_points[i] = local_dataset.slam_point_to_ngp(vLocalMapPoints[i]);
-    }
-
-    std::cout << "[testbed.cu] start regress_nerf" << std::endl;
-    regress_nerf(local_dataset, ngp_map_points, m_training_stream);
-}
-*/
-
 void Testbed::add_sparse_point_cloud(std::vector<Eigen::Vector3f>& sparse_map_points_positions, std::vector<Eigen::Vector3f>& sparse_ref_map_points_positions) {
 	CUDA_CHECK_THROW(cudaDeviceSynchronize());
 	m_nerf.sparse_map_points_positions.clear();
@@ -1505,17 +1454,13 @@ void Testbed::add_sparse_point_cloud(std::vector<Eigen::Vector3f>& sparse_map_po
 
 }
 
-void Testbed::update_training_image(nlohmann::json frame) 
+void Testbed::update_training_image() 
 {
-	// CUDA_CHECK_THROW(cudaDeviceSynchronize());
-	m_nerf.training.dataset.update_training_image(frame);
-	m_nerf.training.update_transforms();
 	CUDA_CHECK_THROW(cudaDeviceSynchronize());
+	m_nerf.training.update_transforms();
 }
 
-void Testbed::add_training_image(nlohmann::json frame, uint8_t *img, uint16_t *depth, uint8_t *alpha, uint8_t *mask) {
-	// CUDA_CHECK_THROW(cudaDeviceSynchronize());
-	// CUDA_CHECK_THROW(cudaStreamSynchronize(m_training_stream));
+TrainingXForm* Testbed::add_training_image(nlohmann::json frame, uint8_t *img, uint16_t *depth, uint8_t *alpha, uint8_t *mask) {
 
 	m_training_data_available = true;
 
@@ -1523,7 +1468,7 @@ void Testbed::add_training_image(nlohmann::json frame, uint8_t *img, uint16_t *d
 		m_nerf.training.depth_supervision_lambda = 0.5f;
 	}
 	
-	m_nerf.training.dataset.add_training_image(frame, img, depth, alpha, mask);
+	TrainingXForm* NerfXform = m_nerf.training.dataset.add_training_image(frame, img, depth, alpha, mask);
 
 	m_nerf.training.cam_pos_gradient.resize(m_nerf.training.dataset.n_images, Vector3f::Zero());
 	m_nerf.training.cam_pos_gradient_gpu.resize_and_copy_from_host(m_nerf.training.cam_pos_gradient);
@@ -1549,16 +1494,8 @@ void Testbed::add_training_image(nlohmann::json frame, uint8_t *img, uint16_t *d
 	// wait until gpu dataset is completed
 	CUDA_CHECK_THROW(cudaStreamSynchronize(m_training_stream));
 	CUDA_CHECK_THROW(cudaDeviceSynchronize());
-}
-
-std::map<int, TrainingXForm> Testbed::get_posterior_extrinsic() {
-	CUDA_CHECK_THROW(cudaDeviceSynchronize());
-	return std::move(m_nerf.training.dataset.get_posterior_extrinsic());
-}
-
-TrainingXForm Testbed::get_posterior_extrinsic(int Id) {
-	CUDA_CHECK_THROW(cudaDeviceSynchronize());
-	return m_nerf.training.dataset.get_posterior_extrinsic(Id);
+	
+	return NerfXform;
 }
 
 void Testbed::train_and_render(bool skip_rendering) {

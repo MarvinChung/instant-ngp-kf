@@ -3010,7 +3010,7 @@ void Testbed::Nerf::Training::set_camera_extrinsics(int frame_idx, const Eigen::
 		return;
 	}
 
-	dataset.xforms[frame_idx].start = dataset.xforms[frame_idx].end = dataset.nerf_matrix_to_ngp(camera_to_world);
+	dataset.xforms[frame_idx]->start = dataset.xforms[frame_idx]->end = dataset.nerf_matrix_to_ngp(camera_to_world);
 	cam_rot_offset[frame_idx].reset_state();
 	cam_pos_offset[frame_idx].reset_state();
 	cam_exposure[frame_idx].reset_state();
@@ -3114,13 +3114,16 @@ void Testbed::Nerf::Training::update_transforms(int first, int last) {
 		rot /= angle;
 
 		if (angle > 0) {
-			xform.start.block<3, 3>(0, 0) = AngleAxisf(angle, rot) * xform.start.block<3, 3>(0, 0);
-			xform.end.block<3, 3>(0, 0) = AngleAxisf(angle, rot) * xform.end.block<3, 3>(0, 0);
+			xform->start.block<3, 3>(0, 0) = AngleAxisf(angle, rot) * xform->start.block<3, 3>(0, 0);
+			xform->end.block<3, 3>(0, 0) = AngleAxisf(angle, rot) * xform->end.block<3, 3>(0, 0);
 		}
 
-		xform.start.col(3) += cam_pos_offset[i + first].variable();
-		xform.end.col(3) += cam_pos_offset[i + first].variable();
-		transforms[i + first] = xform;
+		xform->start.col(3) += cam_pos_offset[i + first].variable();
+		xform->end.col(3)   += cam_pos_offset[i + first].variable();
+		transforms[i + first] = *xform;
+
+		cam_rot_offset[i + first].clear_variable();
+		cam_pos_offset[i + first].clear_variable();
 	}
 
 	transforms_gpu.enlarge(last);
@@ -3291,10 +3294,10 @@ void Testbed::load_nerf() {
 			float angle = rot.norm();
 			rot /= angle;
 			auto trans = random_val_3d(m_rng);
-			m_nerf.training.dataset.xforms[i].start.block<3,3>(0,0) = AngleAxisf(angle, rot).matrix() * m_nerf.training.dataset.xforms[i].start.block<3,3>(0,0);
-			m_nerf.training.dataset.xforms[i].start.col(3) += trans * perturb_amount;
-			m_nerf.training.dataset.xforms[i].end.block<3,3>(0,0) = AngleAxisf(angle, rot).matrix() * m_nerf.training.dataset.xforms[i].end.block<3,3>(0,0);
-			m_nerf.training.dataset.xforms[i].end.col(3) += trans * perturb_amount;
+			m_nerf.training.dataset.xforms[i]->start.block<3,3>(0,0) = AngleAxisf(angle, rot).matrix() * m_nerf.training.dataset.xforms[i]->start.block<3,3>(0,0);
+			m_nerf.training.dataset.xforms[i]->start.col(3) += trans * perturb_amount;
+			m_nerf.training.dataset.xforms[i]->end.block<3,3>(0,0) = AngleAxisf(angle, rot).matrix() * m_nerf.training.dataset.xforms[i]->end.block<3,3>(0,0);
+			m_nerf.training.dataset.xforms[i]->end.col(3) += trans * perturb_amount;
 		}
 	}
 
