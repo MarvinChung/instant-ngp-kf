@@ -123,7 +123,7 @@ public:
 		static const Eigen::Vector3f Z = {0.0f, 0.0f, 1.0f};
 
 		Eigen::AngleAxisf result;
-		Eigen::Matrix3f mat = Eigen::AngleAxisf(rot_len, rot_len > 0 ? rot/rot_len : Z).toRotationMatrix() * Eigen::AngleAxisf(var_len, var_len > 0 ? variable()/var_len : Z).toRotationMatrix();
+		Eigen::Matrix3f mat = Eigen::AngleAxisf(-rot_len, rot_len > 0 ? rot/rot_len : Z).toRotationMatrix() * Eigen::AngleAxisf(var_len, var_len > 0 ? variable()/var_len : Z).toRotationMatrix();
 		result.fromRotationMatrix(mat);
 		m_state.variable = result.axis() * result.angle();
 	}

@@ -318,24 +318,8 @@ public:
 	void set_camera_to_training_view(int trainview);
 	void reset_camera();
 	bool keyboard_event();
-	// void train_nerf_camera_second_order(
-	// 		uint32_t target_batch_size,
-	// 		uint32_t n_rays_per_batch,
-	// 		uint32_t n_rays_total,
-	// 		uint32_t *ray_counter,
-	// 		Eigen::Vector3f *loss,
-	// 		uint32_t* ray_indices,
-	// 		Ray* rays_unnormalized,
-	// 		uint32_t* numsteps,
-	// 		float* coords_compacted,
-	// 		float* coords_gradient,
-	// 		tcnn::network_precision_t* dloss_dmlp_out,
-	// 		bool sample_focal_plane_proportional_to_error,
-	// 		bool sample_image_proportional_to_error,
-	// 		std::unique_ptr<tcnn::Context> forward_ctx,
-	// 		cudaStream_t stream);
 	void generate_training_samples_sdf(Eigen::Vector3f* positions, float* distances, uint32_t n_to_generate, cudaStream_t stream, bool uniform_only);
-	// void regress_density_grid_nerf(float decay, uint32_t n_nonuniform_density_grid_samples, cudaStream_t stream);
+	void cull_empty_region(bool clean_visible, cudaStream_t stream);
 	void update_density_grid_nerf(float decay, uint32_t n_uniform_density_grid_samples, uint32_t n_nonuniform_density_grid_samples, cudaStream_t stream);
 	void update_density_grid_mean_and_bitfield(cudaStream_t stream);
 	void train_nerf(uint32_t target_batch_size, bool get_loss_scalar, cudaStream_t stream);
@@ -589,7 +573,7 @@ public:
 			bool train_envmap = false;
 
 			bool optimize_distortion = false;
-			bool optimize_extrinsics = false; //true 
+			bool optimize_extrinsics = true; // false; //true
 			EExtrinsicOptimizer extrinsic_optimizer_mode = EExtrinsicOptimizer::Adam;  
 			bool optimize_extra_dims = false;
 			bool optimize_focal_length = false;

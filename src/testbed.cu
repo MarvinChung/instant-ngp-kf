@@ -1027,7 +1027,7 @@ void Testbed::visualize_map_points(ImDrawList* list, const Matrix<float, 4, 4>& 
 
 	// std::cout << "[testbed.cu] visualize orb-slam triangulation map points number:" << m_nerf.sparse_map_points_positions.size() << std::endl;
 	for (auto &map_point : m_nerf.sparse_map_points_positions) {
-
+		// white
 		visualize_map_point(list, world2proj, map_point, 0x80ffffff);
 	}
 
