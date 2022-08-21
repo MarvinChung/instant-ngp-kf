@@ -207,21 +207,7 @@ NerfDataset load_nerf(const std::vector<filesystem::path>& jsonpaths, float shar
 	nlohmann::json transforms = nlohmann::json::parse(f, nullptr, true, true);
 
 	ThreadPool pool;
-
-	struct LoadedImageInfo {
-		Eigen::Vector2i res = Eigen::Vector2i::Zero();
-		bool image_data_on_gpu = false;
-		EImageDataType image_type = EImageDataType::None;
-		bool white_transparent = false;
-		bool black_transparent = false;
-		uint32_t mask_color = 0;
-		void *pixels = nullptr;
-		uint16_t *depth_pixels = nullptr;
-		Ray *rays = nullptr;
-		float depth_scale = -1.f;
-	};
 	std::vector<LoadedImageInfo> images;
-	LoadedImageInfo info = {};
 
 	if (transforms["camera"].is_array()) {
 		throw std::runtime_error{"hdf5 is no longer supported. please use the hdf52nerf.py conversion script"};
@@ -359,11 +345,11 @@ NerfDataset load_nerf(const std::vector<filesystem::path>& jsonpaths, float shar
 		}
 
 		if (json.contains("white_transparent")) {
-			info.white_transparent = bool(json["white_transparent"]);
+			result.info.white_transparent = bool(json["white_transparent"]);
 		}
 
 		if (json.contains("black_transparent")) {
-			info.black_transparent = bool(json["black_transparent"]);
+			result.info.black_transparent = bool(json["black_transparent"]);
 		}
 
 		if (json.contains("scale")) {
@@ -379,7 +365,7 @@ NerfDataset load_nerf(const std::vector<filesystem::path>& jsonpaths, float shar
 		}
 
 		if (json.contains("integer_depth_scale")) {
-			info.depth_scale = json["integer_depth_scale"];
+			result.info.depth_scale = json["integer_depth_scale"];
 		}
 
 		// Camera distortion
@@ -503,11 +489,11 @@ NerfDataset load_nerf(const std::vector<filesystem::path>& jsonpaths, float shar
 		{
 			auto progress = tlog::progress(result.n_images);
 
-			if (json.contains("frames") && json["frames"].is_array()) pool.parallelForAsync<size_t>(0, json["frames"].size(), [&, basepath, image_idx, info](size_t i) {
+			if (json.contains("frames") && json["frames"].is_array()) pool.parallelForAsync<size_t>(0, json["frames"].size(), [&, basepath, image_idx](size_t i) {
 				size_t i_img = i + image_idx;
 				auto& frame = json["frames"][i];
 				LoadedImageInfo& dst = images[i_img];
-				dst = info; // copy defaults
+				dst = result.info; // copy defaults
 
 				std::string json_provided_path(frame["file_path"]);
 				if (json_provided_path == "") {
@@ -586,7 +572,7 @@ NerfDataset load_nerf(const std::vector<filesystem::path>& jsonpaths, float shar
 					int Id = frame["Id"];
 				}
 
-				if (result.enable_depth_loading && info.depth_scale > 0.f && frame.contains("depth_path")) {
+				if (result.enable_depth_loading && result.info.depth_scale > 0.f && frame.contains("depth_path")) {
 					fs::path depthpath = basepath / std::string{frame["depth_path"]};
 					if (depthpath.exists()) {
 						int wa=0,ha=0;
@@ -820,6 +806,7 @@ TrainingXForm* NerfDataset::add_training_image(nlohmann::json frame, uint8_t *im
 		throw std::runtime_error{ "No pixels " };
 	}
 
+	// printf("[nerf_loader.cu] this->enable_depth_loading:%d info.depth_scale:%f depth:%p \n", enable_depth_loading, info.depth_scale, depth);
 	if (this->enable_depth_loading && info.depth_scale > 0.f && depth) {
 		// int wa=0,ha=0;
 		// std::cout << "load depth ok" << std::endl;
@@ -934,7 +921,9 @@ void NerfDataset::set_training_image(int frame_idx, const Eigen::Vector2i& image
 	size_t image_type_stride = image_type_size(image_type);
 	// copy to gpu if we need to do a conversion
 	GPUMemory<uint8_t> images_data_gpu_tmp;
-	GPUMemory<uint8_t> depth_tmp;
+	GPUMemory<uint8_t> depth_tmp; 
+	// GPUMemory<uint16_t> depth_tmp; 
+
 	if (!image_data_on_gpu && image_type == EImageDataType::Byte) {
 		images_data_gpu_tmp.resize(img_size * image_type_stride);
 		images_data_gpu_tmp.copy_from_host((uint8_t*)pixels);
@@ -967,14 +956,14 @@ void NerfDataset::set_training_image(int frame_idx, const Eigen::Vector2i& image
 
 		if (depth_pixels && !image_data_on_gpu) {
 			depth_tmp.resize(n_pixels * depth_type_size(depth_type));
-			depth_tmp.copy_from_host((uint8_t*)depth_pixels);
+			depth_tmp.copy_from_host((uint8_t*)depth_pixels); 
 			depth_pixels = depth_tmp.data();
 		}
 
 		switch (depth_type) {
 			default: throw std::runtime_error{"unknown depth type in set_training_image"};
 			case EDepthDataType::UShort: linear_kernel(copy_depth<uint16_t>, 0, nullptr, n_pixels, depth_dst, (const uint16_t*)depth_pixels, depth_scale); break;
-			case EDepthDataType::Float: linear_kernel(copy_depth<float>, 0, nullptr, n_pixels, depth_dst, (const float*)depth_pixels, depth_scale); break;
+			case EDepthDataType::Float:  linear_kernel(copy_depth<float>, 0, nullptr, n_pixels, depth_dst, (const float*)depth_pixels, depth_scale); break;
 		}
 	} else {
 		depthmemory[frame_idx].free_memory();

@@ -315,6 +315,10 @@ public:
 	Eigen::Vector3f view_up() const { return m_camera.col(1); }
 	Eigen::Vector3f view_side() const { return m_camera.col(0); }
 	void set_view_dir(const Eigen::Vector3f& dir);
+	void first_training_view();
+	void last_training_view();
+	void previous_training_view();
+	void next_training_view();
 	void set_camera_to_training_view(int trainview);
 	void reset_camera();
 	bool keyboard_event();
@@ -503,8 +507,6 @@ public:
 			NerfDataset dataset;
 			int n_images_for_training = 0; // how many images to train from, as a high watermark compared to the dataset size
 			int n_images_for_training_prev = 0; // how many images we saw last time at the end of the train function
-			uint32_t train_window_size = 0;  // the number of the latest image can be train
-
 
 			struct ErrorMap {
 				tcnn::GPUMemory<float> data;
@@ -569,6 +571,7 @@ public:
 			bool random_bg_color = true;
 			bool linear_colors = false;
 			ELossType loss_type = ELossType::L2;
+			ELossType depth_loss_type = ELossType::L1;
 			bool snap_to_pixel_centers = true;
 			bool train_envmap = false;
 
@@ -618,6 +621,7 @@ public:
 		uint8_t* get_density_grid_bitfield_mip(uint32_t mip);
 		tcnn::GPUMemory<float> density_grid_mean;
 		float density_grid_mean_cpu;
+		float density_grid_sample_ct_mean_cpu;
 		uint32_t density_grid_ema_step = 0;
 
 		tcnn::GPUMemory<uint8_t> density_grid_sample_ct;

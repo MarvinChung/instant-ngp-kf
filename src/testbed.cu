@@ -237,6 +237,34 @@ void Testbed::set_view_dir(const Vector3f& dir) {
 	set_look_at(old_look_at);
 }
 
+void Testbed::first_training_view() {
+	m_nerf.training.view = 0;
+	set_camera_to_training_view(m_nerf.training.view);
+	reset_accumulation();
+}
+
+void Testbed::last_training_view() {
+	m_nerf.training.view = m_nerf.training.dataset.n_images-1;
+	set_camera_to_training_view(m_nerf.training.view);
+	reset_accumulation();
+}
+
+void Testbed::previous_training_view() {
+	if (m_nerf.training.view != 0) {
+		m_nerf.training.view -= 1;
+	}
+	set_camera_to_training_view(m_nerf.training.view);
+	reset_accumulation();
+}
+
+void Testbed::next_training_view() {
+	if (m_nerf.training.view != m_nerf.training.dataset.n_images-1) {
+		m_nerf.training.view += 1;
+	}
+	set_camera_to_training_view(m_nerf.training.view);
+	reset_accumulation();
+}
+
 void Testbed::set_camera_to_training_view(int trainview) {
 	auto old_look_at = look_at();
 	m_camera = m_smoothed_camera = m_nerf.training.transforms[trainview].start;
@@ -289,6 +317,11 @@ void Testbed::compute_and_save_marching_cubes_mesh(const char* filename, Vector3
 	}
 
 	std::cout << "compute_and_save_marching_cubes_mesh" << std::endl;
+
+	// thresh = m_nerf.density_grid_mean_cpu;
+
+	std::cout << "thresh (density_grid_mean_cpu):" << thresh << std::endl;
+	std::cout << "thresh2 (density_grid_sample_ct_mean_cpu):" << m_nerf.density_grid_sample_ct_mean_cpu << std::endl;
 
 	marching_cubes(res3d, aabb, thresh);
 
@@ -475,6 +508,7 @@ void Testbed::imgui() {
 			ImGui::SliderFloat("Near distance", &m_nerf.training.near_distance, 0.0f, 1.0f);
 			accum_reset |= ImGui::Checkbox("Linear colors", &m_nerf.training.linear_colors);
 			ImGui::Combo("Loss", (int*)&m_nerf.training.loss_type, LossTypeStr);
+			ImGui::Combo("Depth Loss", (int*)&m_nerf.training.depth_loss_type, LossTypeStr);
 			ImGui::Combo("RGB activation", (int*)&m_nerf.rgb_activation, NerfActivationStr);
 			ImGui::Combo("Density activation", (int*)&m_nerf.density_activation, NerfActivationStr);
 			ImGui::Combo("Extrinsic Optimizer", (int*)&m_nerf.training.extrinsic_optimizer_mode, ExtrinsicOptimizerStr);
@@ -725,6 +759,21 @@ void Testbed::imgui() {
 
 			if (m_testbed_mode == ETestbedMode::Nerf || m_testbed_mode == ETestbedMode::NerfSlam) {
 				ImGui::Text("density grid mean: %0.6f", m_nerf.density_grid_mean_cpu);
+				if (ImGui::Button("First")) {
+					first_training_view();
+				}
+				ImGui::SameLine();
+				if (ImGui::Button("Previous")) {
+					previous_training_view();
+				}
+				ImGui::SameLine();
+				if (ImGui::Button("Next")) {
+					next_training_view();
+				}
+				ImGui::SameLine();
+				if (ImGui::Button("Last")) {
+					last_training_view();
+				}
 
 				if (ImGui::SliderInt("Training view", &m_nerf.training.view, 0, (int)m_nerf.training.dataset.n_images-1)) {
 					set_camera_to_training_view(m_nerf.training.view);
@@ -1465,7 +1514,7 @@ TrainingXForm* Testbed::add_training_image(nlohmann::json frame, uint8_t *img, u
 	m_training_data_available = true;
 
 	if(depth != nullptr && m_nerf.training.n_images_for_training == 0){
-		m_nerf.training.depth_supervision_lambda = 0.5f;
+		m_nerf.training.depth_supervision_lambda = 0.0f;
 	}
 	
 	TrainingXForm* NerfXform = m_nerf.training.dataset.add_training_image(frame, img, depth, alpha, mask);
@@ -2298,17 +2347,6 @@ void Testbed::train(uint32_t batch_size) {
 		if (m_nerf.training.n_images_for_training == 0) {
 			throw std::runtime_error{"No image in the dataset. Perhaps no frame in the transform.json, then you need to call add_training_image."};
 		}
-
-		// Only train the latest 10 frames
-		m_nerf.training.train_window_size = std::min(10, m_nerf.training.n_images_for_training);
-	}
-	else if (m_testbed_mode == ETestbedMode::Nerf) {
-		m_nerf.training.train_window_size = m_nerf.training.n_images_for_training;
-	}
-
-	if (m_nerf.training.train_window_size == 0)
-	{
-		throw std::runtime_error{"Train window size is 0. No images can be train"};
 	}
 
 	uint32_t n_prep_to_skip = (m_testbed_mode == ETestbedMode::Nerf || m_testbed_mode == ETestbedMode::NerfSlam) ? tcnn::clamp(m_training_step / 16u, 1u, 16u) : 1u;
