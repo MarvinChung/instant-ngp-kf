@@ -46,7 +46,7 @@ NGP_NAMESPACE_BEGIN
 inline constexpr __device__ float NERF_RENDERING_NEAR_DISTANCE() { return 0.05f; }
 inline constexpr __device__ uint32_t NERF_STEPS() { return 1024; } // finest number of steps per unit length
 inline constexpr __device__ uint32_t NERF_CASCADES() { return 8; }
-inline constexpr __device__ uint32_t SAMPLE_COUNT_THRESHOLD() {return 128; }
+inline constexpr __device__ uint32_t SAMPLE_COUNT_THRESHOLD() {return 64; }
 
 inline constexpr __device__ float SQRT3() { return 1.73205080757f; }
 inline constexpr __device__ float STEPSIZE() { return (SQRT3() / NERF_STEPS()); } // for nerf raymarch
@@ -495,7 +495,7 @@ __global__ void update_density_grid_sample_ct_sparse_point_cloud(
 	density_grid_sample_ct[idx+grid_mip_offset(mip)] |= 0x80;
 }
 
-__global__ void generate_grid_map_points_nerf_nonuniform(const uint32_t n_elements, default_rng_t rng, const uint32_t step, BoundingBox aabb, const uint8_t* __restrict__ grid_in, Vector3f* __restrict__ out, uint32_t *counter, uint32_t n_cascades, /*const float* thresh_ptr,*/ const uint32_t thresh) {
+__global__ void generate_grid_map_points_nerf_nonuniform(const uint32_t n_elements, default_rng_t rng, const uint32_t step, BoundingBox aabb, const uint8_t* __restrict__ grid_in, Vector3f* __restrict__ out, uint32_t *counter, uint32_t n_cascades) {
 	const uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
 	if (i >= n_elements) return;
 
@@ -508,10 +508,7 @@ __global__ void generate_grid_map_points_nerf_nonuniform(const uint32_t n_elemen
 	idx = ((i+step*n_elements) * 56924617) % (NERF_GRIDSIZE()*NERF_GRIDSIZE()*NERF_GRIDSIZE());
 	idx += level * NERF_GRIDSIZE()*NERF_GRIDSIZE()*NERF_GRIDSIZE();
 
-	// float thresh_val = *thresh_ptr * 2;
-
-	// if (grid_in[idx] > thresh_val) {
-	if (grid_in[idx] > thresh) {
+	if (grid_in[idx] > SAMPLE_COUNT_THRESHOLD()) {
 		// Random position within that cellq
 
 		uint32_t pos_idx = idx % (NERF_GRIDSIZE()*NERF_GRIDSIZE()*NERF_GRIDSIZE());
@@ -691,7 +688,7 @@ __global__ void splat_grid_samples_nerf_max_nearest_neighbor(const uint32_t n_el
 	atomicMax((uint32_t*)&grid_out[local_idx], __float_as_uint(optical_thickness));
 }
 
-__global__ void grid_samples_half_to_float(const uint32_t n_elements, BoundingBox aabb, float* dst, const tcnn::network_precision_t* network_output, ENerfActivation density_activation, const NerfPosition* __restrict__ coords_in, const float* __restrict__ grid_in, const uint8_t* __restrict__ density_grid_sample_ct, const float density_grid_sample_ct_mean_cpu) {
+__global__ void grid_samples_half_to_float(const uint32_t n_elements, BoundingBox aabb, float* dst, const tcnn::network_precision_t* network_output, ENerfActivation density_activation, const NerfPosition* __restrict__ coords_in, const float* __restrict__ grid_in, const uint8_t* __restrict__ density_grid_sample_ct, const float density_grid_mean_cpu) {
 	const uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
 	if (i >= n_elements) return;
 
@@ -706,12 +703,15 @@ __global__ void grid_samples_half_to_float(const uint32_t n_elements, BoundingBo
 			mlp = -10000.f;
 		}
 	}
-	// if (density_grid_sample_ct) {
-	// 	Vector3f pos = unwarp_position(coords_in[i].p, aabb);
-	// 	uint8_t value = density_grid_sample_ct_value(pos, density_grid_sample_ct, mip_from_pos(pos));
-	// 	if( value < density_grid_sample_ct_mean_cpu )
-	// 		mlp = -10000.f;
-	// }
+
+	if (density_grid_sample_ct && grid_in) {
+		Vector3f pos = unwarp_position(coords_in[i].p, aabb);
+		uint8_t value = density_grid_sample_ct_value(pos, density_grid_sample_ct, mip_from_pos(pos));
+		float grid_density = cascaded_grid_at(pos, grid_in, mip_from_pos(pos));
+
+		if( value == 0 && grid_density < density_grid_mean_cpu)
+			mlp = -10000.f;
+	}
 
 	dst[i] = mlp;
 }
@@ -1514,7 +1514,11 @@ __global__ void generate_training_samples_nerf(
 		float dt = calc_dt(t, cone_angle);
 		uint32_t mip = mip_from_dt(dt, pos);
 
-		if (density_grid_occupied_at(pos, density_grid, mip)){ // || density_grid_sample_ct_value(pos, density_grid_sample_ct, mip) > SAMPLE_COUNT_THRESHOLD()) {
+		if (density_grid_sample_ct_value(pos, density_grid_sample_ct, mip) > SAMPLE_COUNT_THRESHOLD() && !density_grid_occupied_at(pos, density_grid, mip))
+		{
+			printf("[i:%d] this happen! pos:[%f, %f, %f] mip:%d, density_grid_sample_ct_value:%d \n", i, pos[0], pos[1], pos[2], mip, density_grid_sample_ct_value(pos, density_grid_sample_ct, mip));
+		}
+		if (density_grid_occupied_at(pos, density_grid, mip) || density_grid_sample_ct_value(pos, density_grid_sample_ct, mip) > SAMPLE_COUNT_THRESHOLD()) {
 			++j;
 			t += dt;
 		} else {
@@ -1546,7 +1550,7 @@ __global__ void generate_training_samples_nerf(
 	while (aabb.contains(pos = ray_unnormalized.o + t * ray_d_normalized) && j < numsteps) {
 		float dt = calc_dt(t, cone_angle);
 		uint32_t mip = mip_from_dt(dt, pos);
-		if (density_grid_occupied_at(pos, density_grid, mip)){// || density_grid_sample_ct_value(pos, density_grid_sample_ct, mip) > SAMPLE_COUNT_THRESHOLD()) {
+		if (density_grid_occupied_at(pos, density_grid, mip) || density_grid_sample_ct_value(pos, density_grid_sample_ct, mip) > SAMPLE_COUNT_THRESHOLD()) {
 			coords_out(j)->set_with_optional_extra_dims(warp_position(pos, aabb), warped_dir, warp_dt(dt), extra_dims, coords_out.stride_in_bytes);
 			++j;
 			t += dt;
@@ -1782,7 +1786,7 @@ __global__ void compute_loss_kernel_train_nerf(
 
 	float target_depth = rays_in_unnormalized[tid].d.norm() * ((depth_supervision_lambda > 0.0f && metadata[img].depth) ? read_depth(xy, resolution, metadata[img].depth) : -1.0f);
 	LossAndGradient lg_depth = loss_and_gradient(Array3f::Constant(target_depth), Array3f::Constant(depth_ray), depth_loss_type);
-	float depth_loss_gradient = target_depth > 0.0f ? lg_depth.gradient.x() : 0;
+	float depth_loss_gradient = target_depth > 0.0f ? depth_supervision_lambda * lg_depth.gradient.x() : 0;
 
 	// Note: dividing the gradient by the PDF would cause unbiased loss estimates.
 	// Essentially: variance reduction, but otherwise the same optimization.
@@ -1966,7 +1970,7 @@ __global__ void compute_loss_kernel_train_nerf(
 		local_dL_doutput[3] =
 			loss_scale * dloss_by_dmlp +
 			loss_scale * dweight_bound_loss_doutput + 
-			loss_scale * ddistLdoutput * 0.005 + 
+			loss_scale * ddistLdoutput * 0.01 + 
 			(float(local_network_output[3]) < 0.0f ? -output_l1_reg_density : 0.0f) +
 			(float(local_network_output[3]) > -10.0f && depth < near_distance ? 1e-4f : 0.0f);
 
@@ -3275,6 +3279,7 @@ void Testbed::update_density_grid_nerf(float decay, uint32_t n_uniform_density_g
 	if(m_nerf.map_points_positions.size() < 300000){
 		CUDA_CHECK_THROW(cudaMemsetAsync(map_points_counter, 0, sizeof(uint32_t), stream));
 
+		// A grid being sampled greater than 128 should be consider as surface
 		linear_kernel(generate_grid_map_points_nerf_nonuniform, 0, stream,
 			n_nonuniform_density_grid_samples,
 			m_rng,
@@ -3283,9 +3288,7 @@ void Testbed::update_density_grid_nerf(float decay, uint32_t n_uniform_density_g
 			m_nerf.density_grid_sample_ct.data(),
 			map_points_positions,
 			map_points_counter,
-			m_nerf.max_cascade+1,
-			// m_nerf.density_grid_sample_ct_mean.data(), // A grid being sampled greater than a threshold should be consider as surface
-			128 // A grid being sampled greater than 128 should be consider as surface
+			m_nerf.max_cascade+1
 		);
 
 		uint32_t map_points_counter_cpu;
@@ -4092,19 +4095,6 @@ GPUMemory<float> Testbed::get_density_on_grid(Vector3i res3d, const BoundingBox&
 	//// Origin code
 	BoundingBox unit_cube = BoundingBox{Vector3f::Zero(), Vector3f::Ones()};
 	generate_grid_samples_nerf_uniform<<<blocks, threads, 0, m_inference_stream>>>(res3d, m_nerf.density_grid_ema_step, aabb, nerf_mode ? m_aabb : unit_cube , positions);
-	// generate_grid_samples_nerf_uniform<<<blocks, threads, 0, m_inference_stream>>>(res3d, m_nerf.density_grid_ema_step, aabb, unit_cube, positions);
-
-	////  Hard code
-	//// office0 [[-5.5,5.9],[-6.7,5.4],[-4.7,5.3]]
-	// Vector3f box_min, box_max, mid;
-	// box_min << -5.5, -6.7, -4.7;
-	// box_max << 5.9, 5.4, 5.3;
-	// box_min = m_nerf.training.dataset.slam_point_to_ngp(box_min);
-	// box_max = m_nerf.training.dataset.slam_point_to_ngp(box_max);
-
-	// BoundingBox my_cube = BoundingBox{box_min, box_max};
-	// generate_grid_samples_nerf_uniform<<<blocks, threads, 0, m_inference_stream>>>(res3d, m_nerf.density_grid_ema_step, aabb, my_cube, positions);
-	//// Hard code end
 
 	// Only process 1m elements at a time
 	for (uint32_t offset = 0; offset < n_elements; offset += batch_size) {
@@ -4127,7 +4117,7 @@ GPUMemory<float> Testbed::get_density_on_grid(Vector3i res3d, const BoundingBox&
 			positions + offset,
 			nerf_mode ? m_nerf.density_grid.data() : nullptr,
 			nerf_mode ? m_nerf.density_grid_sample_ct.data() : nullptr,
-			nerf_mode ? m_nerf.density_grid_sample_ct_mean_cpu : 0.0f
+			nerf_mode ? m_nerf.density_grid_mean_cpu : std::numeric_limits<float>::max()
 		);
 	}
 

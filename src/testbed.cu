@@ -1514,7 +1514,8 @@ TrainingXForm* Testbed::add_training_image(nlohmann::json frame, uint8_t *img, u
 	m_training_data_available = true;
 
 	if(depth != nullptr && m_nerf.training.n_images_for_training == 0){
-		m_nerf.training.depth_supervision_lambda = 0.0f;
+		m_nerf.training.depth_supervision_lambda = 0.0;
+		// m_nerf.density_activation = ENerfActivation::Logistic;
 	}
 	
 	TrainingXForm* NerfXform = m_nerf.training.dataset.add_training_image(frame, img, depth, alpha, mask);
