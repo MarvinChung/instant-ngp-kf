@@ -46,7 +46,8 @@ NGP_NAMESPACE_BEGIN
 inline constexpr __device__ float NERF_RENDERING_NEAR_DISTANCE() { return 0.05f; }
 inline constexpr __device__ uint32_t NERF_STEPS() { return 1024; } // finest number of steps per unit length
 inline constexpr __device__ uint32_t NERF_CASCADES() { return 8; }
-inline constexpr __device__ uint32_t SAMPLE_COUNT_THRESHOLD() {return 64; }
+inline constexpr __device__ uint32_t SAMPLE_COUNT_THRESHOLD() { return 64; }
+inline constexpr __device__ float WEIGHT_THRESHOLD() { return 0.1f; }
 
 inline constexpr __device__ float SQRT3() { return 1.73205080757f; }
 inline constexpr __device__ float STEPSIZE() { return (SQRT3() / NERF_STEPS()); } // for nerf raymarch
@@ -1514,10 +1515,11 @@ __global__ void generate_training_samples_nerf(
 		float dt = calc_dt(t, cone_angle);
 		uint32_t mip = mip_from_dt(dt, pos);
 
-		if (density_grid_sample_ct_value(pos, density_grid_sample_ct, mip) > SAMPLE_COUNT_THRESHOLD() && !density_grid_occupied_at(pos, density_grid, mip))
-		{
-			printf("[i:%d] this happen! pos:[%f, %f, %f] mip:%d, density_grid_sample_ct_value:%d \n", i, pos[0], pos[1], pos[2], mip, density_grid_sample_ct_value(pos, density_grid_sample_ct, mip));
-		}
+		// if (density_grid_sample_ct_value(pos, density_grid_sample_ct, mip) > SAMPLE_COUNT_THRESHOLD() && !density_grid_occupied_at(pos, density_grid, mip))
+		// {
+		// 	printf("[i:%d] this happen! pos:[%f, %f, %f] mip:%d, density_grid_sample_ct_value:%d \n", i, pos[0], pos[1], pos[2], mip, density_grid_sample_ct_value(pos, density_grid_sample_ct, mip));
+		// }
+		
 		if (density_grid_occupied_at(pos, density_grid, mip) || density_grid_sample_ct_value(pos, density_grid_sample_ct, mip) > SAMPLE_COUNT_THRESHOLD()) {
 			++j;
 			t += dt;
@@ -1651,7 +1653,6 @@ __global__ void compute_loss_kernel_train_nerf(
 	float T = 1.f;
 
 	float EPSILON = 1e-4f;
-	float WEIGHT_THRESHOLD = 0.1f;
 
 	Array3f rgb_ray = Array3f::Zero();
 	Vector3f hitpoint = Vector3f::Zero();
@@ -1682,21 +1683,16 @@ __global__ void compute_loss_kernel_train_nerf(
 		depth_ray += weight * cur_depth;
 		T *= (1.f - alpha);
 
-		if ( weight > WEIGHT_THRESHOLD ) {
-			// density_grid_sample_ct updates in generate_training_samples_nerf
-			uint32_t mip = mip_from_dt(dt, pos);
-			uint32_t idx = cascaded_grid_idx_at(pos, mip);
-			// store in temp to lock the value in density_grid_sample_ct
-			atomicAdd(&sample_ct_temp[idx+grid_mip_offset(mip)], (uint32_t)1);
-		}
+		// if ( weight > WEIGHT_THRESHOLD() ) {
+		// density_grid_sample_ct updates in generate_training_samples_nerf
+		uint32_t mip = mip_from_dt(dt, pos);
+		uint32_t idx = cascaded_grid_idx_at(pos, mip);
+		// store in temp to lock the value in density_grid_sample_ct
+		atomicAdd(&sample_ct_temp[idx+grid_mip_offset(mip)], (uint32_t)1);
+		// }
 
 		// if( tid == 0 )
 		// 	printf("weight:%f alpha:%f T:%f density:%f dt:%f \n", weight, alpha, T, density, dt);
-
-		// if (weight != weight){
-		// 	printf("[nan?] weight:%f \n", weight);
-		// 	assert(false);
-		// }
 
 		pos_arr[compacted_numsteps] = pos;
 		if (compacted_numsteps != 0)
