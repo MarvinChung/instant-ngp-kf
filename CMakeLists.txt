@@ -279,6 +279,13 @@ if (Python_FOUND)
 	add_subdirectory("dependencies/pybind11")
 endif()
 
+##########
+# PCL #
+##########
+find_package(PCL REQUIRED COMPONENTS common io)
+list(APPEND IncludeList ${PCL_INCLUDE_DIRS})
+set(NGP_LIBRARIES ${NGP_LIBRARIES} ${PCL_COMMON_LIBRARIES} ${PCL_IO_LIBRARIES})
+    	   	
 ##############
 # tinylogger #
 ##############
