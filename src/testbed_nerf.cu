@@ -33,6 +33,7 @@
 #include <filesystem/directory.h>
 #include <filesystem/path.h>
 
+
 #ifdef copysign
 #undef copysign
 #endif
@@ -1514,10 +1515,10 @@ __global__ void generate_training_samples_nerf(
 		float dt = calc_dt(t, cone_angle);
 		uint32_t mip = mip_from_dt(dt, pos);
 
-		if (density_grid_sample_ct_value(pos, density_grid_sample_ct, mip) > SAMPLE_COUNT_THRESHOLD() && !density_grid_occupied_at(pos, density_grid, mip))
-		{
-			printf("[i:%d] this happen! pos:[%f, %f, %f] mip:%d, density_grid_sample_ct_value:%d \n", i, pos[0], pos[1], pos[2], mip, density_grid_sample_ct_value(pos, density_grid_sample_ct, mip));
-		}
+		// if (density_grid_sample_ct_value(pos, density_grid_sample_ct, mip) > SAMPLE_COUNT_THRESHOLD() && !density_grid_occupied_at(pos, density_grid, mip))
+		// {
+		// 	printf("[i:%d] this happen! pos:[%f, %f, %f] mip:%d, density_grid_sample_ct_value:%d \n", i, pos[0], pos[1], pos[2], mip, density_grid_sample_ct_value(pos, density_grid_sample_ct, mip));
+		// }
 		if (density_grid_occupied_at(pos, density_grid, mip) || density_grid_sample_ct_value(pos, density_grid_sample_ct, mip) > SAMPLE_COUNT_THRESHOLD()) {
 			++j;
 			t += dt;
@@ -2421,6 +2422,21 @@ __global__ void safe_divide(const uint32_t num_elements, float* __restrict__ ino
 	inout[i] = local_divisor > 0.0f ? (inout[i] / local_divisor) : 0.0f;
 }
 
+__global__ void warp_map_points(
+	const uint32_t num_elements, 
+	BoundingBox aabb,
+	const Eigen::Vector3f* __restrict__ map_points, 
+	Eigen::Vector3f* __restrict__ out
+)
+{
+	const uint32_t tid = threadIdx.x + blockIdx.x * blockDim.x;
+	if(tid >= num_elements) return;
+
+	out[tid] = warp_position(map_points[tid], aabb);
+}
+
+
+
 void Testbed::NerfTracer::init_rays_from_camera(
 	uint32_t sample_index,
 	uint32_t padded_output_width,
@@ -3276,7 +3292,7 @@ void Testbed::update_density_grid_nerf(float decay, uint32_t n_uniform_density_g
 	// std::cout << "[testbed_nerf] density_grid_sample_ct_mean: " << density_grid_sample_ct_mean_cpu << std::endl;
 
 	// Insert the points that should be surface to the visualization
-	if(m_nerf.map_points_positions.size() < 300000){
+	if(m_nerf.nerf_triangulation_map_points_positions.size() < 300000){
 		CUDA_CHECK_THROW(cudaMemsetAsync(map_points_counter, 0, sizeof(uint32_t), stream));
 
 		// A grid being sampled greater than 128 should be consider as surface
@@ -3303,7 +3319,7 @@ void Testbed::update_density_grid_nerf(float decay, uint32_t n_uniform_density_g
 		}
 
 		if (map_points_counter_cpu > 0)
-			m_nerf.map_points_positions.insert(m_nerf.map_points_positions.end(), map_points_positions_cpu.begin(), map_points_positions_cpu.end());
+			m_nerf.nerf_triangulation_map_points_positions.insert(m_nerf.nerf_triangulation_map_points_positions.end(), map_points_positions_cpu.begin(), map_points_positions_cpu.end());
 
 		m_rng.advance();
 	}
@@ -4204,6 +4220,152 @@ int Testbed::find_best_training_view(int default_view) {
 		}
 	}
 	return bestimage;
+}
+
+void Testbed::compute_point_cloud_vertex_color(uint32_t n_verts, Eigen::Vector3f *verts, Eigen::Vector3f *vert_colors)
+{
+	if (!n_verts) {
+		return;
+	}
+
+	if (m_testbed_mode == ETestbedMode::Nerf || m_testbed_mode == ETestbedMode::NerfSlam ) {
+		const float* extra_dims_gpu = get_inference_extra_dims(m_inference_stream);
+
+		const uint32_t floats_per_coord = sizeof(NerfCoordinate) / sizeof(float) + m_nerf_network->n_extra_dims();
+		const uint32_t extra_stride = m_nerf_network->n_extra_dims() * sizeof(float);
+
+		GPUMemory<float> coords(n_verts * floats_per_coord);
+		GPUMemory<float> mlp_out(n_verts * 4);
+
+		std::cout << "n_verts:" << n_verts << std::endl;
+		std::cout << "floats_per_coord:" << floats_per_coord << std::endl;
+
+		GPUMatrix<float> positions_matrix((float*)coords.data(), floats_per_coord, n_verts);
+		GPUMatrix<float> color_matrix(mlp_out.data(), 4, n_verts);
+		linear_kernel(generate_nerf_network_inputs_from_positions, 0, m_inference_stream, n_verts, m_aabb, verts, PitchedPtr<NerfCoordinate>((NerfCoordinate*)coords.data(), 1, 0, extra_stride), extra_dims_gpu);
+		m_network->inference(m_inference_stream, positions_matrix, color_matrix);
+		linear_kernel(extract_srgb_with_activation, 0, m_inference_stream, n_verts * 3, 3, mlp_out.data(), (float*)vert_colors, m_nerf.rgb_activation, m_nerf.training.linear_colors);
+	}
+}
+
+void Testbed::build_point_cloud() 
+{
+	
+	// sparse point cloud
+	const uint32_t sparse_cloud_size = m_nerf.sparse_map_points_positions.size() + m_nerf.sparse_ref_map_points_positions.size();
+	const uint32_t n_sparse_elements = next_multiple(sparse_cloud_size, tcnn::batch_size_granularity);
+	m_nerf.sparse_point_cloud.verts.resize(n_sparse_elements);
+	m_nerf.sparse_point_cloud.verts.memset(0);
+	m_nerf.sparse_point_cloud.vert_colors.resize(n_sparse_elements);
+	m_nerf.sparse_point_cloud.vert_colors.memset(0);
+
+	m_nerf.sparse_point_cloud.cloud.width    = sparse_cloud_size;
+  	m_nerf.sparse_point_cloud.cloud.height   = 1;
+  	m_nerf.sparse_point_cloud.cloud.is_dense = false;
+  	m_nerf.sparse_point_cloud.cloud.resize (m_nerf.sparse_point_cloud.cloud.width * m_nerf.sparse_point_cloud.cloud.height );
+	
+	// input normal map_points to verts
+	linear_kernel(warp_map_points, 0, m_inference_stream,
+		m_nerf.sparse_map_points_positions.size(),
+		m_aabb,
+		m_nerf.sparse_map_points_positions_gpu.data(),
+		m_nerf.sparse_point_cloud.verts.data()
+	);
+	// input ref map_points to verts
+	linear_kernel(warp_map_points, 0, m_inference_stream,
+		m_nerf.sparse_ref_map_points_positions.size(),
+		m_aabb,
+		m_nerf.sparse_ref_map_points_positions_gpu.data(),
+		m_nerf.sparse_point_cloud.verts.data() + 3 * m_nerf.sparse_map_points_positions.size()
+	);
+
+	// dense point cloud
+	const uint32_t dense_cloud_size  = m_nerf.nerf_triangulation_map_points_positions.size();
+	const uint32_t n_dense_elements = next_multiple(dense_cloud_size, tcnn::batch_size_granularity);
+	m_nerf.dense_point_cloud.verts.resize(n_dense_elements);
+	m_nerf.dense_point_cloud.verts.memset(0);
+	m_nerf.dense_point_cloud.vert_colors.resize(n_dense_elements);
+	m_nerf.dense_point_cloud.vert_colors.memset(0);
+	m_nerf.dense_point_cloud.cloud.width    = dense_cloud_size;
+  	m_nerf.dense_point_cloud.cloud.height   = 1;
+  	m_nerf.dense_point_cloud.cloud.is_dense = true;
+  	m_nerf.dense_point_cloud.cloud.resize (m_nerf.dense_point_cloud.cloud.width * m_nerf.dense_point_cloud.cloud.height );
+  	
+  	GPUMemoryArena::Allocation alloc;
+	auto scratch = allocate_workspace_and_distribute<
+		Eigen::Vector3f
+	>(
+		m_inference_stream, &alloc,
+		n_dense_elements
+	);
+
+	Eigen::Vector3f *tri_verts = std::get<0>(scratch);
+	CUDA_CHECK_THROW(cudaMemsetAsync(tri_verts, 0, dense_cloud_size*sizeof(Eigen::Vector3f), m_inference_stream));
+	CUDA_CHECK_THROW(cudaMemcpyAsync(tri_verts, m_nerf.nerf_triangulation_map_points_positions.data(), dense_cloud_size*sizeof(Eigen::Vector3f), cudaMemcpyHostToDevice, m_inference_stream));
+
+  	// input NeRF triangulation map_points to verts
+	linear_kernel(warp_map_points, 0, m_inference_stream,
+		dense_cloud_size,
+		m_aabb,
+		tri_verts,
+		m_nerf.dense_point_cloud.verts.data()
+	);
+
+  	// compute color
+  	std::cout << "n_sparse_elements: " << n_sparse_elements << std::endl;
+  	std::cout << "m_nerf.sparse_point_cloud.verts.size():" << m_nerf.sparse_point_cloud.verts.size() << std::endl;
+  	std::cout << "m_nerf.sparse_point_cloud.vert_colors.size():" << m_nerf.sparse_point_cloud.vert_colors.size() << std::endl;
+
+  	std::cout << "n_dense_elements: " << n_dense_elements << std::endl;
+  	std::cout << "m_nerf.dense_point_cloud.verts.size():" << m_nerf.dense_point_cloud.verts.size() << std::endl;
+  	std::cout << "m_nerf.dense_point_cloud.vert_colors.size():" << m_nerf.dense_point_cloud.vert_colors.size() << std::endl;
+
+	compute_point_cloud_vertex_color(n_sparse_elements, m_nerf.sparse_point_cloud.verts.data(), m_nerf.sparse_point_cloud.vert_colors.data());
+	compute_point_cloud_vertex_color(n_dense_elements, m_nerf.dense_point_cloud.verts.data(), m_nerf.dense_point_cloud.vert_colors.data());
+
+	m_nerf.sparse_point_cloud.is_built = true;
+	m_nerf.dense_point_cloud.is_built = true;
+
+}
+
+void Testbed::save_point_cloud(const std::string &pcd_name, PointCloud& point_cloud)
+{
+	std::vector<Vector3f> cpuverts; cpuverts.resize(point_cloud.verts.size());
+	std::vector<Vector3f> cpucolors; cpucolors.resize(point_cloud.vert_colors.size());
+	point_cloud.verts.copy_to_host(cpuverts);
+	point_cloud.vert_colors.copy_to_host(cpucolors);
+
+
+	//verts size will be greater than cloud size since verts size need be 128*k
+
+  	uint32_t ct = 0;
+  	for (auto& point: point_cloud.cloud)
+  	{
+  		Eigen::Vector3f &xyz = cpuverts[ct];
+    	point.x = xyz[0];
+    	point.y = xyz[1];
+    	point.z = xyz[2];
+
+  		Eigen::Vector3f &rgb = cpucolors[ct];
+    	uint8_t r,g,b;
+		r = static_cast<uint8_t>(rgb[0]*255);
+		g = static_cast<uint8_t>(rgb[1]*255);
+		b = static_cast<uint8_t>(rgb[2]*255);
+		std::uint32_t rgb32 = ((std::uint32_t)r << 16 | (std::uint32_t)g << 8 | (std::uint32_t)b);
+		point.rgb = *reinterpret_cast<float*>(&rgb32);
+    	ct ++;
+  	}
+
+  	pcl::io::savePCDFileASCII (pcd_name, point_cloud.cloud);
+}
+
+void Testbed::save_sparse_point_cloud(const std::string &pcd_name) 
+{
+	save_point_cloud(pcd_name, m_nerf.sparse_point_cloud);
+}
+
+void Testbed::save_dense_point_cloud(const std::string &pcd_name) {
+	save_point_cloud(pcd_name, m_nerf.dense_point_cloud);
 }
 
 NGP_NAMESPACE_END

@@ -311,6 +311,16 @@ std::string get_filename_in_data_path_with_suffix(fs::path data_path, fs::path n
 		return data_path.stem().str() + "_" + default_name + std::string(suffix);
 }
 
+void Testbed::compute_and_save_point_clouds(const std::string &sparse_point_pcd, const std::string &dense_point_pcd) 
+{
+
+	std::cout << "compute_and_save_point_clouds" << std::endl;
+
+	build_point_cloud();
+	save_sparse_point_cloud(sparse_point_pcd);
+	save_dense_point_cloud(dense_point_pcd);
+}
+
 void Testbed::compute_and_save_marching_cubes_mesh(const char* filename, Vector3i res3d , BoundingBox aabb, float thresh, bool unwrap_it) {
 	if (aabb.is_empty()) {
 		aabb = (m_testbed_mode == ETestbedMode::Nerf || m_testbed_mode == ETestbedMode::NerfSlam) ? m_render_aabb : m_aabb;
@@ -995,6 +1005,37 @@ void Testbed::imgui() {
 				ImGui::SliderFloat("Inflate", &m_mesh.inflate_amount, 0.f, 128.f);
 			}
 		}
+
+		if (ImGui::CollapsingHeader("NeRF triangulation Point Cloud")) {
+
+			if (imgui_colored_button("Build Point Cloud!", 0.4f)) {
+				build_point_cloud();
+			}
+
+			if(m_nerf.sparse_point_cloud.is_built)
+			{
+				if (ImGui::Button("Save sparse point cloud!")) {
+
+					static char sparse_pcd_filename_buf[128] = "";
+					if (sparse_pcd_filename_buf[0] == '\0') {
+						snprintf(sparse_pcd_filename_buf, sizeof(sparse_pcd_filename_buf), "%s", "sparse.pcd");
+					}
+					save_sparse_point_cloud(sparse_pcd_filename_buf);
+				}
+			}
+
+			if(m_nerf.dense_point_cloud.is_built)
+			{
+				if (ImGui::Button("Save dense point cloud!")) {
+
+					static char dense_pcd_filename_buf[128] = "";
+					if (dense_pcd_filename_buf[0] == '\0') {
+						snprintf(dense_pcd_filename_buf, sizeof(dense_pcd_filename_buf), "%s", "dense.pcd");
+					}
+					save_sparse_point_cloud(dense_pcd_filename_buf);
+				}
+			}
+		}
 	}
 
 	if (m_testbed_mode == ETestbedMode::Sdf) {
@@ -1069,7 +1110,7 @@ void Testbed::imgui() {
 void Testbed::visualize_map_points(ImDrawList* list, const Matrix<float, 4, 4>& world2proj) {
 
 	// std::cout << "[testbed.cu] visualize nerf triangulation map points number:" << m_nerf.map_points_positions.size() << std::endl;
-	for (auto &map_point : m_nerf.map_points_positions) {
+	for (auto &map_point : m_nerf.nerf_triangulation_map_points_positions) {
 		// green
 		visualize_map_point(list, world2proj, map_point, 0x40ffff40);
 	}
