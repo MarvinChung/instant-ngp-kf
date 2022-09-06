@@ -1416,7 +1416,8 @@ __global__ void generate_training_samples_nerf(
 	const float* __restrict__ cdf_img,
 	const Vector2i cdf_res,
 	const float* __restrict__ extra_dims_gpu,
-	uint32_t n_extra_dims
+	uint32_t n_extra_dims,
+	uint32_t* special_counter
 	// uint32_t img
 ) {
 	const uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
@@ -1515,10 +1516,11 @@ __global__ void generate_training_samples_nerf(
 		float dt = calc_dt(t, cone_angle);
 		uint32_t mip = mip_from_dt(dt, pos);
 
-		// if (density_grid_sample_ct_value(pos, density_grid_sample_ct, mip) > SAMPLE_COUNT_THRESHOLD() && !density_grid_occupied_at(pos, density_grid, mip))
-		// {
-		// 	printf("[i:%d] this happen! pos:[%f, %f, %f] mip:%d, density_grid_sample_ct_value:%d \n", i, pos[0], pos[1], pos[2], mip, density_grid_sample_ct_value(pos, density_grid_sample_ct, mip));
-		// }
+		if (density_grid_sample_ct_value(pos, density_grid_sample_ct, mip) > SAMPLE_COUNT_THRESHOLD() && !density_grid_occupied_at(pos, density_grid, mip))
+		{
+			// printf("[i:%d] this happen! pos:[%f, %f, %f] mip:%d, density_grid_sample_ct_value:%d \n", i, pos[0], pos[1], pos[2], mip, density_grid_sample_ct_value(pos, density_grid_sample_ct, mip));
+			atomicAdd(special_counter, 1);
+		}
 		
 		if (density_grid_occupied_at(pos, density_grid, mip) || density_grid_sample_ct_value(pos, density_grid_sample_ct, mip) > SAMPLE_COUNT_THRESHOLD()) {
 			++j;
@@ -1683,13 +1685,13 @@ __global__ void compute_loss_kernel_train_nerf(
 		depth_ray += weight * cur_depth;
 		T *= (1.f - alpha);
 
-		// if ( weight > WEIGHT_THRESHOLD() ) {
-		// density_grid_sample_ct updates in generate_training_samples_nerf
-		uint32_t mip = mip_from_dt(dt, pos);
-		uint32_t idx = cascaded_grid_idx_at(pos, mip);
-		// store in temp to lock the value in density_grid_sample_ct
-		atomicAdd(&sample_ct_temp[idx+grid_mip_offset(mip)], (uint32_t)1);
-		// }
+		if ( weight > WEIGHT_THRESHOLD() ) {
+			// density_grid_sample_ct updates in generate_training_samples_nerf
+			uint32_t mip = mip_from_dt(dt, pos);
+			uint32_t idx = cascaded_grid_idx_at(pos, mip);
+			// store in temp to lock the value in density_grid_sample_ct
+			atomicAdd(&sample_ct_temp[idx+grid_mip_offset(mip)], (uint32_t)1);
+		}
 
 		// if( tid == 0 )
 		// 	printf("weight:%f alpha:%f T:%f density:%f dt:%f \n", weight, alpha, T, density, dt);
@@ -3404,8 +3406,12 @@ float Testbed::Nerf::Training::Counters::update_after_training(uint32_t target_b
 
 	CUDA_CHECK_THROW(cudaDeviceSynchronize());
 
- 	// printf("[testbed_nerf] target_batch_size:%d rays_per_batch:%d \n", target_batch_size, rays_per_batch);
- 	// printf("[testbed_nerf] counter[0]:%d, compacted_counter[0]:%d \n", counter_cpu[0], compacted_counter_cpu[0]);
+	total_ct += counter_cpu[0];
+	printf("=========================================================\n");
+ 	printf("[testbed_nerf] target_batch_size:%d rays_per_batch:%d \n", target_batch_size, rays_per_batch);
+ 	printf("[testbed_nerf] counter[0]:%d, compacted_counter[0]:%d special_ct:%d total_ct:%d\n", counter_cpu[0], compacted_counter_cpu[0], special_ct, total_ct);
+ 	printf("[testbed_nerf] special percent :%lf\n", ((double)special_ct)/total_ct);
+	printf("=========================================================\n");
 
 	return loss_scalar;
 }
@@ -3715,6 +3721,7 @@ void Testbed::train_nerf_step(uint32_t target_batch_size, uint32_t n_rays_per_ba
 		float, // coords_gradient
 		float, // max_level_compacted
 		uint32_t, // ray_counter
+		uint32_t, //sample_ct_temp
 		uint32_t
 	>(
 		stream, &alloc,
@@ -3729,7 +3736,8 @@ void Testbed::train_nerf_step(uint32_t target_batch_size, uint32_t n_rays_per_ba
 		target_batch_size * floats_per_coord,
 		target_batch_size,
 		1,
-		NERF_GRIDSIZE() * NERF_GRIDSIZE() * NERF_GRIDSIZE() * NERF_CASCADES()
+		NERF_GRIDSIZE() * NERF_GRIDSIZE() * NERF_GRIDSIZE() * NERF_CASCADES(),
+		1
 	);
 
 	// TODO: C++17 structured binding
@@ -3745,7 +3753,7 @@ void Testbed::train_nerf_step(uint32_t target_batch_size, uint32_t n_rays_per_ba
 	float* max_level_compacted = std::get<9>(scratch);
 	uint32_t* ray_counter = std::get<10>(scratch);
 	uint32_t* sample_ct_temp = std::get<11>(scratch);
-
+	uint32_t* special_counter = std::get<12>(scratch);
 
 	uint32_t max_inference;
 	if (m_nerf.training.counters_rgb.measured_batch_size_before_compaction == 0) {
@@ -3781,6 +3789,7 @@ void Testbed::train_nerf_step(uint32_t target_batch_size, uint32_t n_rays_per_ba
 	bool accumulate_error = true;
 
 	CUDA_CHECK_THROW(cudaMemsetAsync(ray_counter, 0, sizeof(uint32_t), stream));
+	CUDA_CHECK_THROW(cudaMemsetAsync(special_counter, 0, sizeof(uint32_t), stream));
 
 	linear_kernel(generate_training_samples_nerf, 0, stream,
 		n_rays_per_batch,
@@ -3811,9 +3820,14 @@ void Testbed::train_nerf_step(uint32_t target_batch_size, uint32_t n_rays_per_ba
 		sample_image_proportional_to_error ? m_nerf.training.error_map.cdf_img.data() : nullptr,
 		m_nerf.training.error_map.cdf_resolution,
 		m_nerf.training.extra_dims_gpu.data(),
-		m_nerf_network->n_extra_dims()
+		m_nerf_network->n_extra_dims(),
+		special_counter
 		// m_training_step % m_nerf.training.n_images_for_training // This line force to train image one by one
 	);
+
+	uint32_t special_ct;	
+	CUDA_CHECK_THROW(cudaMemcpyAsync(&special_ct, special_counter, sizeof(uint32_t), cudaMemcpyDeviceToHost, stream));
+	m_nerf.training.counters_rgb.special_ct      += special_ct;
 
 	auto hg_enc = dynamic_cast<GridEncoding<network_precision_t>*>(m_encoding.get());
 	if (hg_enc) {

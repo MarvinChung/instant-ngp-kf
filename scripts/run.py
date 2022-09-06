@@ -22,7 +22,7 @@ from scenes import *
 
 from tqdm import tqdm
 
-pyngp_path = './instant-ngp-kf/build'
+pyngp_path = './instant-ngp-kf/build/'
 sys.path.append(pyngp_path)
 import pyngp as ngp # noqa
 

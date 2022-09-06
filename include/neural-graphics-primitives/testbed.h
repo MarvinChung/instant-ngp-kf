@@ -562,6 +562,9 @@ public:
 				uint32_t measured_batch_size = 0;
 				uint32_t measured_batch_size_before_compaction = 0;
 
+				int special_ct = 0;
+				int total_ct = 0;
+
 				void prepare_for_training_steps(cudaStream_t stream);
 				float update_after_training(uint32_t target_batch_size, bool get_loss_scalar, cudaStream_t stream);
 			};
