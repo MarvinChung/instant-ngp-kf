@@ -306,6 +306,7 @@ public:
 	void mouse_drag(const Eigen::Vector2f& rel, int button);
 	void mouse_wheel(Eigen::Vector2f m, float delta);
 	void handle_file(const std::string& file);
+	void set_nerf_camera_matrix_from_slam(const Eigen::Matrix<float, 3, 4>& cam);
 	void set_nerf_camera_matrix(const Eigen::Matrix<float, 3, 4>& cam);
 	Eigen::Vector3f look_at() const;
 	void set_look_at(const Eigen::Vector3f& pos);

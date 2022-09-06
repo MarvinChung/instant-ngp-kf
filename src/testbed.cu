@@ -115,6 +115,7 @@ void Testbed::clear_training_data() {
 }
 
 json Testbed::load_network_config(const fs::path& network_config_path) {
+
 	if (!network_config_path.empty()) {
 		m_network_config_path = network_config_path;
 	}
@@ -213,6 +214,10 @@ void Testbed::translate_camera(const Vector3f& rel) {
 
 void Testbed::set_nerf_camera_matrix(const Matrix<float, 3, 4>& cam) {
 	m_camera = m_nerf.training.dataset.nerf_matrix_to_ngp(cam);
+}
+
+void Testbed::set_nerf_camera_matrix_from_slam(const Matrix<float, 3, 4>& cam) {
+	m_camera = m_nerf.training.dataset.slam_matrix_to_ngp(cam);
 }
 
 Vector3f Testbed::look_at() const {
@@ -2869,13 +2874,16 @@ void Testbed::load_snapshot(const std::string& filepath_string) {
 		m_nerf.training.counters_rgb.measured_batch_size_before_compaction = m_network_config["snapshot"]["nerf"]["rgb"]["measured_batch_size_before_compaction"];
 		// If we haven't got a nerf dataset loaded, load dataset metadata from the snapshot
 		// and render using just that.
+
 		if (m_data_path.empty() && m_network_config["snapshot"]["nerf"].contains("dataset")) {
+			std::cout << "has dataset! below has a bug when load from SLAM snapshot" << std::endl;
 			m_nerf.training.dataset = m_network_config["snapshot"]["nerf"]["dataset"];
+			std::cout << "has dataset?" << std::endl;
 			if (m_testbed_mode == ETestbedMode::Nerf)
 				load_nerf();
-			else if (m_testbed_mode == ETestbedMode::NerfSlam)
+			else if (m_testbed_mode == ETestbedMode::NerfSlam){
 				load_nerfslam();
-
+			}
 		}
 
 		if (m_network_config["snapshot"]["density_grid_size"] != NERF_GRIDSIZE()) {

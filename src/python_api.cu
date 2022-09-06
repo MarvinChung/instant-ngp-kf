@@ -427,6 +427,7 @@ PYBIND11_MODULE(pyngp, m) {
 		.def_readwrite("zoom", &Testbed::m_zoom)
 		.def_readwrite("screen_center", &Testbed::m_screen_center)
 		.def("set_nerf_camera_matrix", &Testbed::set_nerf_camera_matrix)
+		.def("set_nerf_camera_matrix_from_slam", &Testbed::set_nerf_camera_matrix_from_slam)
 		.def("set_camera_to_training_view", &Testbed::set_camera_to_training_view)
 		.def("compute_image_mse", &Testbed::compute_image_mse,
 			py::arg("quantize") = false

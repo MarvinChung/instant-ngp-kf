@@ -47,7 +47,7 @@ NGP_NAMESPACE_BEGIN
 inline constexpr __device__ float NERF_RENDERING_NEAR_DISTANCE() { return 0.05f; }
 inline constexpr __device__ uint32_t NERF_STEPS() { return 1024; } // finest number of steps per unit length
 inline constexpr __device__ uint32_t NERF_CASCADES() { return 8; }
-inline constexpr __device__ uint32_t SAMPLE_COUNT_THRESHOLD() {return 64; }
+inline constexpr __device__ uint32_t SAMPLE_COUNT_THRESHOLD() {return 128; }
 
 inline constexpr __device__ float SQRT3() { return 1.73205080757f; }
 inline constexpr __device__ float STEPSIZE() { return (SQRT3() / NERF_STEPS()); } // for nerf raymarch
@@ -868,7 +868,8 @@ __global__ void generate_nerf_network_inputs_from_positions(const uint32_t n_ele
 	const uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
 	if (i >= n_elements) return;
 
-	Vector3f dir=(pos[i]-Vector3f::Constant(0.5f)).normalized(); // choose outward pointing directions, for want of a better choice
+	// Vector3f dir=(pos[i]-Vector3f::Constant(0.5f)).normalized(); // choose outward pointing directions, for want of a better choice
+	Vector3f dir=(Vector3f::Constant(0.5f)-pos[i]).normalized(); // choose inward pointing directions, for what of a better choice
 	network_input(i)->set_with_optional_extra_dims(warp_position(pos[i], aabb), warp_direction(dir), warp_dt(MIN_CONE_STEPSIZE()), extra_dims, network_input.stride_in_bytes);
 }
 
@@ -4346,13 +4347,10 @@ void Testbed::save_point_cloud(const std::string &pcd_name, PointCloud& point_cl
     	point.y = xyz[1];
     	point.z = xyz[2];
 
-  		Eigen::Vector3f &rgb = cpucolors[ct];
-    	uint8_t r,g,b;
-		r = static_cast<uint8_t>(rgb[0]*255);
-		g = static_cast<uint8_t>(rgb[1]*255);
-		b = static_cast<uint8_t>(rgb[2]*255);
-		std::uint32_t rgb32 = ((std::uint32_t)r << 16 | (std::uint32_t)g << 8 | (std::uint32_t)b);
-		point.rgb = *reinterpret_cast<float*>(&rgb32);
+  		Eigen::Vector3f &c = cpucolors[ct];
+		unsigned char c8[3]={(unsigned char)tcnn::clamp(c.x()*255.f,0.f,255.f),(unsigned char)tcnn::clamp(c.y()*255.f,0.f,255.f),(unsigned char)tcnn::clamp(c.z()*255.f,0.f,255.f)};
+		std::uint32_t rgb32 = ((std::uint32_t)c8[0] << 16 | (std::uint32_t)c8[1]<< 8 | (std::uint32_t)c8[2]);
+		point.rgb = rgb32; //*reinterpret_cast<float*>(&rgb32);
     	ct ++;
   	}
 
