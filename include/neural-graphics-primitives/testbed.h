@@ -31,7 +31,6 @@
 #include <json/json.hpp>
 
 #include <filesystem/path.h>
-#include <pcl/io/pcd_io.h>
 
 #ifdef NGP_PYTHON
 #include <pybind11/pybind11.h>
@@ -398,25 +397,6 @@ public:
 
 	float compute_image_mse(bool quantize_to_byte);
 
-	struct PointCloud{
-		tcnn::GPUMemory<Eigen::Vector3f> verts;
-		tcnn::GPUMemory<Eigen::Vector3f> vert_colors;
-		pcl::PointCloud<pcl::PointXYZRGB> cloud;
-		bool is_built = false;
-
-		void clear() {
-			verts={};
-			vert_colors={};
-		}
-	};
-
-	void compute_point_cloud_vertex_color(uint32_t n_verts, Eigen::Vector3f *verts, Eigen::Vector3f *vert_colors);
-	void build_point_cloud();
-	void save_sparse_point_cloud(const std::string &pcd_name="sparse.pcd"); 
-	void save_dense_point_cloud(const std::string &pcd_name="dense.pcd");
-	void save_point_cloud(const std::string &pcd_name, PointCloud& point_cloud);
-	void compute_and_save_point_clouds(const std::string &sparse_point_pcd, const std::string &dense_point_pcd);
-
 	void compute_and_save_marching_cubes_mesh(const char* filename, Eigen::Vector3i res3d = Eigen::Vector3i::Constant(128), BoundingBox aabb = {}, float thresh = 2.5f, bool unwrap_it = false);
 	Eigen::Vector3i compute_and_save_png_slices(const char* filename, int res, BoundingBox aabb = {}, float thresh = 2.5f, float density_range = 4.f, bool flip_y_and_z_axes = false);
 
@@ -652,9 +632,6 @@ public:
 		std::vector<Eigen::Vector3f> sparse_ref_map_points_positions;
 		tcnn::GPUMemory<Eigen::Vector3f> sparse_map_points_positions_gpu;
 		tcnn::GPUMemory<Eigen::Vector3f> sparse_ref_map_points_positions_gpu;
-	
-		PointCloud sparse_point_cloud; // by ORB-SLAM
-		PointCloud dense_point_cloud;  // by NeRF Triangulation
 
 		uint32_t max_cascade = 0;
 
