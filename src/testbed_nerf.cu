@@ -3254,13 +3254,15 @@ void Testbed::update_density_grid_nerf(float decay, uint32_t n_uniform_density_g
 			CUDA_CHECK_THROW(cudaMemsetAsync(m_nerf.density_grid_sample_ct.data(), 0, sizeof(uint8_t)*n_elements, stream));
 		}
 		// Only cull away empty regions where no camera is looking when the cameras are actually meaningful.
-		if (!m_nerf.training.dataset.has_rays) {
+		if (!m_nerf.training.dataset.has_rays && m_testbed_mode == ETestbedMode::Nerf) {
 			// linear_kernel(mark_untrained_density_grid, 0, stream, n_elements, m_nerf.density_grid.data(),
 			// 	m_nerf.training.n_images_for_training,
 			// 	m_nerf.training.metadata_gpu.data(),
 			// 	m_nerf.training.transforms_gpu.data(),
 			// 	m_training_step == 0
 			// );
+
+			// NerfSlam mode should not call this
 			cull_empty_region(m_training_step == 0, stream);
 		} 
 	}
@@ -3296,7 +3298,7 @@ void Testbed::update_density_grid_nerf(float decay, uint32_t n_uniform_density_g
 	if(m_nerf.nerf_triangulation_map_points_positions.size() < 300000){
 		CUDA_CHECK_THROW(cudaMemsetAsync(map_points_counter, 0, sizeof(uint32_t), stream));
 
-		// A grid being sampled greater than 128 should be consider as surface
+		// A grid being sampled greater than SAMPLE_COUNT_THRESHOLD() should be consider as surface
 		linear_kernel(generate_grid_map_points_nerf_nonuniform, 0, stream,
 			n_nonuniform_density_grid_samples,
 			m_rng,
