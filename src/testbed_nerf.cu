@@ -2961,6 +2961,8 @@ void Testbed::Nerf::Training::update_transforms(int first, int last) {
 	}
 
 	for (uint32_t i = 0; i < n; ++i) {
+		// This is hacky, dataset.xforms is updated from ORB-SLAM. 
+		// Therefore, the value is updated from reprojection error. However, the pointer is not safe.
 		TrainingXForm xform = *dataset.xforms[i + first];
 		Vector3f rot = cam_rot_offset[i + first].variable();
 		float angle = rot.norm();
@@ -2979,8 +2981,100 @@ void Testbed::Nerf::Training::update_transforms(int first, int last) {
 		// cam_pos_offset[i + first].clear_variable();
 	}
 
+	// dataset.xforms (blue camera in gui): Only affect by reprojection error and update immediately
+	// transforms     (white camera in gui) : Reprojection error + Photometric error
+
 	transforms_gpu.enlarge(last);
 	CUDA_CHECK_THROW(cudaMemcpy(transforms_gpu.data() + first, transforms.data() + first, n * sizeof(TrainingXForm), cudaMemcpyHostToDevice));
+}
+
+void Testbed::update_camera(cudaStream_t stream) 
+{
+	float per_camera_loss_scale = (float)m_nerf.training.n_images_for_training / LOSS_SCALE / (float)m_nerf.training.n_steps_between_cam_updates;
+
+	if (m_nerf.training.optimize_extrinsics ) {
+
+		CUDA_CHECK_THROW(cudaMemcpyAsync(m_nerf.training.cam_pos_gradient.data(), m_nerf.training.cam_pos_gradient_gpu.data(), m_nerf.training.cam_pos_gradient_gpu.get_bytes(), cudaMemcpyDeviceToHost, stream));
+		CUDA_CHECK_THROW(cudaMemcpyAsync(m_nerf.training.cam_rot_gradient.data(), m_nerf.training.cam_rot_gradient_gpu.data(), m_nerf.training.cam_rot_gradient_gpu.get_bytes(), cudaMemcpyDeviceToHost, stream));
+		CUDA_CHECK_THROW(cudaStreamSynchronize(stream));
+
+		// first order
+		if (m_nerf.training.extrinsic_optimizer_mode == EExtrinsicOptimizer::Adam) {
+
+			// Optimization step
+			for (uint32_t i = 0; i < m_nerf.training.n_images_for_training; ++i) {
+				Vector3f pos_gradient = m_nerf.training.cam_pos_gradient[i] * per_camera_loss_scale;
+				Vector3f rot_gradient = m_nerf.training.cam_rot_gradient[i] * per_camera_loss_scale;
+
+				float l2_reg = m_nerf.training.extrinsic_l2_reg;
+				pos_gradient += m_nerf.training.cam_pos_offset[i].variable() * l2_reg;
+				rot_gradient += m_nerf.training.cam_rot_offset[i].variable() * l2_reg;
+
+				m_nerf.training.cam_pos_offset[i].set_learning_rate(std::max(1e-3f * std::pow(0.33f, (float)(m_nerf.training.cam_pos_offset[i].step() / 128)), m_optimizer->learning_rate()/1000.0f));
+				m_nerf.training.cam_rot_offset[i].set_learning_rate(std::max(1e-3f * std::pow(0.33f, (float)(m_nerf.training.cam_rot_offset[i].step() / 128)), m_optimizer->learning_rate()/1000.0f));
+
+				m_nerf.training.cam_pos_offset[i].step(pos_gradient);
+				m_nerf.training.cam_rot_offset[i].step(rot_gradient);
+			}
+		}
+		else{
+			throw std::runtime_error{" extrinsic_optimizer_mode is not valid"};
+		}
+
+		m_nerf.training.update_transforms();
+
+	}
+
+	if (m_nerf.training.optimize_distortion) {
+		linear_kernel(safe_divide, 0, stream,
+			m_distortion.map->n_params(),
+			m_distortion.map->gradients(),
+			m_distortion.map->gradient_weights()
+		);
+		m_distortion.trainer->optimizer_step(stream, LOSS_SCALE*(float)m_nerf.training.n_steps_between_cam_updates);
+	}
+
+	if (m_nerf.training.optimize_focal_length) {
+		CUDA_CHECK_THROW(cudaMemcpyAsync(m_nerf.training.cam_focal_length_gradient.data(),m_nerf.training.cam_focal_length_gradient_gpu.data(),m_nerf.training.cam_focal_length_gradient_gpu.get_bytes(),cudaMemcpyDeviceToHost, stream));
+		CUDA_CHECK_THROW(cudaStreamSynchronize(stream));
+		Vector2f focal_length_gradient = m_nerf.training.cam_focal_length_gradient * per_camera_loss_scale;
+		float l2_reg = m_nerf.training.intrinsic_l2_reg;
+		focal_length_gradient += m_nerf.training.cam_focal_length_offset.variable() * l2_reg;
+		m_nerf.training.cam_focal_length_offset.set_learning_rate(std::max(1e-3f * std::pow(0.33f, (float)(m_nerf.training.cam_focal_length_offset.step() / 128)),m_optimizer->learning_rate() / 1000.0f));
+		m_nerf.training.cam_focal_length_offset.step(focal_length_gradient);
+		m_nerf.training.update_metadata();
+	}
+
+	if (m_nerf.training.optimize_exposure) {
+		CUDA_CHECK_THROW(cudaMemcpyAsync(m_nerf.training.cam_exposure_gradient.data(), m_nerf.training.cam_exposure_gradient_gpu.data(), m_nerf.training.cam_exposure_gradient_gpu.get_bytes(), cudaMemcpyDeviceToHost, stream));
+
+		Array3f mean_exposure = Array3f::Constant(0.0f);
+
+		// Optimization step
+		for (uint32_t i = 0; i < m_nerf.training.n_images_for_training; ++i) {
+			Array3f gradient = m_nerf.training.cam_exposure_gradient[i] * per_camera_loss_scale;
+
+			float l2_reg = m_nerf.training.exposure_l2_reg;
+			gradient += m_nerf.training.cam_exposure[i].variable() * l2_reg;
+
+			m_nerf.training.cam_exposure[i].set_learning_rate(m_optimizer->learning_rate());
+			m_nerf.training.cam_exposure[i].step(gradient);
+
+			mean_exposure += m_nerf.training.cam_exposure[i].variable();
+		}
+
+		mean_exposure /= m_nerf.training.n_images_for_training;
+
+		// Renormalize
+		std::vector<Array3f> cam_exposures(m_nerf.training.n_images_for_training);
+		for (uint32_t i = 0; i < m_nerf.training.n_images_for_training; ++i) {
+			cam_exposures[i] = m_nerf.training.cam_exposure[i].variable() -= mean_exposure;
+		}
+
+		CUDA_CHECK_THROW(cudaMemcpyAsync(m_nerf.training.cam_exposure_gpu.data(), cam_exposures.data(), m_nerf.training.cam_exposure_gpu.get_bytes(), cudaMemcpyHostToDevice, stream));
+	}
+
+	m_nerf.training.n_steps_since_cam_update = 0;
 }
 
 void Testbed::create_empty_nerf_dataset(size_t n_images, int aabb_scale, bool is_hdr) {
@@ -3533,7 +3627,7 @@ void Testbed::train_nerf(uint32_t target_batch_size, bool get_loss_scalar, cudaS
 		m_loss_scalar.set(0.f);
 		tlog::warning() << "Nerf training generated 0 samples. Aborting training.";
 		m_train = false;
-		throw std::runtime_error{"Stop here. No training samples -> Go Debug"};
+		throw std::runtime_error{"Stop here. No training samples -> Go Debug. (This may be out of GPU memory. For example, someone uses the same GPU while you are running the program.) "};
 	}
 
 	// Compute CDFs from the error map
@@ -3630,92 +3724,7 @@ void Testbed::train_nerf(uint32_t target_batch_size, bool get_loss_scalar, cudaS
 
 	bool train_camera = m_nerf.training.optimize_extrinsics || m_nerf.training.optimize_distortion || m_nerf.training.optimize_focal_length || m_nerf.training.optimize_exposure;
 	if (train_camera && m_nerf.training.n_steps_since_cam_update >= m_nerf.training.n_steps_between_cam_updates) {
-		float per_camera_loss_scale = (float)m_nerf.training.n_images_for_training / LOSS_SCALE / (float)m_nerf.training.n_steps_between_cam_updates;
-
-		if (m_nerf.training.optimize_extrinsics ) {
-
-			CUDA_CHECK_THROW(cudaMemcpyAsync(m_nerf.training.cam_pos_gradient.data(), m_nerf.training.cam_pos_gradient_gpu.data(), m_nerf.training.cam_pos_gradient_gpu.get_bytes(), cudaMemcpyDeviceToHost, stream));
-			CUDA_CHECK_THROW(cudaMemcpyAsync(m_nerf.training.cam_rot_gradient.data(), m_nerf.training.cam_rot_gradient_gpu.data(), m_nerf.training.cam_rot_gradient_gpu.get_bytes(), cudaMemcpyDeviceToHost, stream));
-			CUDA_CHECK_THROW(cudaStreamSynchronize(stream));
-
-			// first order
-			if (m_nerf.training.extrinsic_optimizer_mode == EExtrinsicOptimizer::Adam) {
-
-				// Optimization step
-				for (uint32_t i = 0; i < m_nerf.training.n_images_for_training; ++i) {
-					Vector3f pos_gradient = m_nerf.training.cam_pos_gradient[i] * per_camera_loss_scale;
-					Vector3f rot_gradient = m_nerf.training.cam_rot_gradient[i] * per_camera_loss_scale;
-
-					float l2_reg = m_nerf.training.extrinsic_l2_reg;
-					pos_gradient += m_nerf.training.cam_pos_offset[i].variable() * l2_reg;
-					rot_gradient += m_nerf.training.cam_rot_offset[i].variable() * l2_reg;
-
-					m_nerf.training.cam_pos_offset[i].set_learning_rate(std::max(1e-3f * std::pow(0.33f, (float)(m_nerf.training.cam_pos_offset[i].step() / 128)), m_optimizer->learning_rate()/1000.0f));
-					m_nerf.training.cam_rot_offset[i].set_learning_rate(std::max(1e-3f * std::pow(0.33f, (float)(m_nerf.training.cam_rot_offset[i].step() / 128)), m_optimizer->learning_rate()/1000.0f));
-
-					m_nerf.training.cam_pos_offset[i].step(pos_gradient);
-					m_nerf.training.cam_rot_offset[i].step(rot_gradient);
-				}
-
-			}
-			else{
-				throw std::runtime_error{" extrinsic_optimizer_mode is not valid"};
-			}
-
-			m_nerf.training.update_transforms();
-
-		}
-
-		if (m_nerf.training.optimize_distortion) {
-			linear_kernel(safe_divide, 0, stream,
-				m_distortion.map->n_params(),
-				m_distortion.map->gradients(),
-				m_distortion.map->gradient_weights()
-			);
-			m_distortion.trainer->optimizer_step(stream, LOSS_SCALE*(float)m_nerf.training.n_steps_between_cam_updates);
-		}
-
-		if (m_nerf.training.optimize_focal_length) {
-			CUDA_CHECK_THROW(cudaMemcpyAsync(m_nerf.training.cam_focal_length_gradient.data(),m_nerf.training.cam_focal_length_gradient_gpu.data(),m_nerf.training.cam_focal_length_gradient_gpu.get_bytes(),cudaMemcpyDeviceToHost, stream));
-			CUDA_CHECK_THROW(cudaStreamSynchronize(stream));
-			Vector2f focal_length_gradient = m_nerf.training.cam_focal_length_gradient * per_camera_loss_scale;
-			float l2_reg = m_nerf.training.intrinsic_l2_reg;
-			focal_length_gradient += m_nerf.training.cam_focal_length_offset.variable() * l2_reg;
-			m_nerf.training.cam_focal_length_offset.set_learning_rate(std::max(1e-3f * std::pow(0.33f, (float)(m_nerf.training.cam_focal_length_offset.step() / 128)),m_optimizer->learning_rate() / 1000.0f));
-			m_nerf.training.cam_focal_length_offset.step(focal_length_gradient);
-			m_nerf.training.update_metadata();
-		}
-
-		if (m_nerf.training.optimize_exposure) {
-			CUDA_CHECK_THROW(cudaMemcpyAsync(m_nerf.training.cam_exposure_gradient.data(), m_nerf.training.cam_exposure_gradient_gpu.data(), m_nerf.training.cam_exposure_gradient_gpu.get_bytes(), cudaMemcpyDeviceToHost, stream));
-
-			Array3f mean_exposure = Array3f::Constant(0.0f);
-
-			// Optimization step
-			for (uint32_t i = 0; i < m_nerf.training.n_images_for_training; ++i) {
-				Array3f gradient = m_nerf.training.cam_exposure_gradient[i] * per_camera_loss_scale;
-
-				float l2_reg = m_nerf.training.exposure_l2_reg;
-				gradient += m_nerf.training.cam_exposure[i].variable() * l2_reg;
-
-				m_nerf.training.cam_exposure[i].set_learning_rate(m_optimizer->learning_rate());
-				m_nerf.training.cam_exposure[i].step(gradient);
-
-				mean_exposure += m_nerf.training.cam_exposure[i].variable();
-			}
-
-			mean_exposure /= m_nerf.training.n_images_for_training;
-
-			// Renormalize
-			std::vector<Array3f> cam_exposures(m_nerf.training.n_images_for_training);
-			for (uint32_t i = 0; i < m_nerf.training.n_images_for_training; ++i) {
-				cam_exposures[i] = m_nerf.training.cam_exposure[i].variable() -= mean_exposure;
-			}
-
-			CUDA_CHECK_THROW(cudaMemcpyAsync(m_nerf.training.cam_exposure_gpu.data(), cam_exposures.data(), m_nerf.training.cam_exposure_gpu.get_bytes(), cudaMemcpyHostToDevice, stream));
-		}
-
-		m_nerf.training.n_steps_since_cam_update = 0;
+		update_camera(stream);
 	}
 }
 

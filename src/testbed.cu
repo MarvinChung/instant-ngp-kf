@@ -1096,8 +1096,11 @@ void Testbed::visualize_nerf_cameras(ImDrawList* list, const Matrix<float, 4, 4>
 	for (int i = 0; i < m_nerf.training.n_images_for_training; ++i) {
 		auto res = m_nerf.training.dataset.metadata[i].resolution;
 		float aspect = float(res.x())/float(res.y());
+		// blue camera (reprojection error)
 		visualize_nerf_camera(list, world2proj, m_nerf.training.dataset.xforms[i]->start, aspect, 0x40ffff40);
 		visualize_nerf_camera(list, world2proj, m_nerf.training.dataset.xforms[i]->end, aspect, 0x40ffff40);
+
+		// white camera (reprojection error + photometric error)
 		visualize_nerf_camera(list, world2proj, m_nerf.training.transforms[i].start, aspect, 0x80ffffff);
 
 		add_debug_line(list, world2proj, m_nerf.training.dataset.xforms[i]->start.col(3), m_nerf.training.transforms[i].start.col(3), 0xffff40ff); // 1% loss change offset
@@ -1508,20 +1511,19 @@ void Testbed::add_sparse_point_cloud(std::vector<Eigen::Vector3f>& sparse_map_po
 
 }
 
-void Testbed::update_training_image() 
-{
-	CUDA_CHECK_THROW(cudaDeviceSynchronize());
-	m_nerf.training.update_transforms();
-}
-
-TrainingXForm* Testbed::add_training_image(nlohmann::json frame, uint8_t *img, uint16_t *depth, uint8_t *alpha, uint8_t *mask) {
+std::tuple<TrainingXForm*, int> Testbed::add_training_image(nlohmann::json frame, uint8_t *img, uint16_t *depth, uint8_t *alpha, uint8_t *mask) {
 
 	m_training_data_available = true;
 
-	if(depth != nullptr && m_nerf.training.n_images_for_training == 0){
-		m_nerf.training.depth_supervision_lambda = 0.0;
-		// m_nerf.density_activation = ENerfActivation::Logistic;
+	if (m_nerf.training.n_images_for_training == 0)
+	{
+		if(depth != nullptr){
+			m_nerf.training.depth_supervision_lambda = 0.0;
+		}
+		m_nerf.training.cam_focal_length_offset = AdamOptimizer<Vector2f>(1e-5f);
+		m_nerf.training.cam_focal_length_gradient = Vector2f::Zero();
 	}
+	
 	
 	TrainingXForm* NerfXform = m_nerf.training.dataset.add_training_image(frame, img, depth, alpha, mask);
 
@@ -1531,7 +1533,6 @@ TrainingXForm* Testbed::add_training_image(nlohmann::json frame, uint8_t *img, u
 	m_nerf.training.cam_exposure.resize(m_nerf.training.dataset.n_images, AdamOptimizer<Array3f>(1e-3f));
 	m_nerf.training.cam_pos_offset.resize(m_nerf.training.dataset.n_images, AdamOptimizer<Vector3f>(1e-4f));
 	m_nerf.training.cam_rot_offset.resize(m_nerf.training.dataset.n_images, RotationAdamOptimizer(1e-4f));
-	m_nerf.training.cam_focal_length_offset = AdamOptimizer<Vector2f>(1e-5f);
 
 	m_nerf.training.cam_rot_gradient.resize(m_nerf.training.dataset.n_images, Vector3f::Zero());
 	m_nerf.training.cam_rot_gradient_gpu.resize_and_copy_from_host(m_nerf.training.cam_rot_gradient);
@@ -1540,7 +1541,6 @@ TrainingXForm* Testbed::add_training_image(nlohmann::json frame, uint8_t *img, u
 	m_nerf.training.cam_exposure_gpu.resize_and_copy_from_host(m_nerf.training.cam_exposure_gradient);
 	m_nerf.training.cam_exposure_gradient_gpu.resize_and_copy_from_host(m_nerf.training.cam_exposure_gradient);
 
-	m_nerf.training.cam_focal_length_gradient = Vector2f::Zero();
 	m_nerf.training.cam_focal_length_gradient_gpu.resize_and_copy_from_host(&m_nerf.training.cam_focal_length_gradient, 1);
 
 	m_nerf.training.update_metadata();
@@ -1550,7 +1550,7 @@ TrainingXForm* Testbed::add_training_image(nlohmann::json frame, uint8_t *img, u
 	CUDA_CHECK_THROW(cudaStreamSynchronize(m_training_stream));
 	CUDA_CHECK_THROW(cudaDeviceSynchronize());
 	
-	return NerfXform;
+	return std::make_tuple(NerfXform, m_nerf.training.dataset.n_images-1);
 }
 
 void Testbed::train_and_render(bool skip_rendering) {
