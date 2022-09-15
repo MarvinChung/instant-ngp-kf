@@ -4351,8 +4351,13 @@ void Testbed::save_point_cloud(const std::string &pcd_name, PointCloud& point_cl
 
   		Eigen::Vector3f &c = cpucolors[ct];
 		unsigned char c8[3]={(unsigned char)tcnn::clamp(c.x()*255.f,0.f,255.f),(unsigned char)tcnn::clamp(c.y()*255.f,0.f,255.f),(unsigned char)tcnn::clamp(c.z()*255.f,0.f,255.f)};
-		std::uint32_t rgb32 = ((std::uint32_t)c8[0] << 16 | (std::uint32_t)c8[1]<< 8 | (std::uint32_t)c8[2]);
-		point.rgb = rgb32; //*reinterpret_cast<float*>(&rgb32);
+		//std::uint32_t rgb32 = ((std::uint32_t)c8[0] << 16 | (std::uint32_t)c8[1]<< 8 | (std::uint32_t)c8[2]);
+		//point.rgb = 
+		//point.rgb = rgb32; //*reinterpret_cast<float*>(&rgb32);
+    	point.r = c8[0]; // tcnn::clamp(c.x()*255.f,0.f,255.f);
+    	point.g = c8[1]; // tcnn::clamp(c.y()*255.f,0.f,255.f);
+    	point.b = c8[2]; // tcnn::clamp(c.z()*255.f,0.f,255.f);
+
     	ct ++;
   	}
 
