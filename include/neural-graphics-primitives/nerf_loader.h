@@ -82,6 +82,8 @@ struct NerfDataset {
 
 	std::vector<TrainingImageMetadata> metadata;
 	std::vector<TrainingXForm*> xforms;
+	std::vector<Eigen::Matrix<float, 3, 4>> gt_camera_traj;
+
 	tcnn::GPUMemory<float> sharpness_data;
 	Eigen::Vector2i sharpness_resolution = {0, 0};
 	tcnn::GPUMemory<float> envmap_data;
@@ -114,10 +116,11 @@ struct NerfDataset {
 		return (has_light_dirs ? 3u : 0u) + n_extra_learnable_dims;
 	}
 
-	void add_prior_map_points(std::vector<Eigen::Vector3f>& map_points, std::vector<Eigen::Vector3f>& ref_map_points);
+	// void add_prior_map_points(std::vector<Eigen::Vector3f>& map_points, std::vector<Eigen::Vector3f>& ref_map_points);
 	// NerfDataset update_training_image(nlohmann::json frame);
 	TrainingXForm* add_training_image(nlohmann::json frame, uint8_t *img, uint16_t *depth, uint8_t *alpha, uint8_t *mask);
 	void set_training_image(int frame_idx, const Eigen::Vector2i& image_resolution, const void* pixels, const void* depth_pixels, float depth_scale, bool image_data_on_gpu, EImageDataType image_type, EDepthDataType depth_type, float sharpen_amount = 0.f, bool white_transparent = false, bool black_transparent = false, uint32_t mask_color = 0, const Ray *rays = nullptr);
+	void add_gt_traj(const std::string& gt_path);
 
 	Eigen::Vector3f nerf_direction_to_ngp(const Eigen::Vector3f& nerf_dir) {
 		Eigen::Vector3f result = nerf_dir;

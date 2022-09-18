@@ -738,6 +738,12 @@ void Testbed::imgui() {
 				ImGui::SameLine();
 				ImGui::Checkbox("Visualize cameras", &m_nerf.visualize_cameras);
 
+				if (m_nerf.training.dataset.gt_camera_traj.size() > 0)
+				{
+					ImGui::SameLine();
+					ImGui::Checkbox("Visualize gt cameras", &m_nerf.visualize_gt_cameras);
+				}
+
 				ImGui::SameLine();
 				ImGui::Checkbox("Visualize map points", &m_nerf.visualize_map_points);
 
@@ -1110,6 +1116,17 @@ void Testbed::visualize_nerf_cameras(ImDrawList* list, const Matrix<float, 4, 4>
 	}
 }
 
+void Testbed::visualize_gt_nerf_cameras(ImDrawList* list, const Matrix<float, 4, 4>& world2proj) {
+	auto res = m_nerf.training.dataset.metadata[0].resolution;
+	float aspect = float(res.x())/float(res.y());
+	
+	for (int i = 0; i < m_nerf.training.dataset.gt_camera_traj.size(); ++i) {
+
+		// red camera (gt traj)
+		visualize_nerf_camera(list, world2proj, m_nerf.training.dataset.gt_camera_traj[i], aspect, 0x80ff0000);
+	}
+}
+
 void Testbed::draw_visualizations(ImDrawList* list, const Matrix<float, 3, 4>& camera_matrix) {
 	// Visualize 3D cameras for SDF or NeRF use cases
 	if (m_testbed_mode != ETestbedMode::Image) {
@@ -1135,6 +1152,10 @@ void Testbed::draw_visualizations(ImDrawList* list, const Matrix<float, 3, 4>& c
 		if (m_testbed_mode == ETestbedMode::Nerf || m_testbed_mode == ETestbedMode::NerfSlam) {
 			if (m_nerf.visualize_cameras) {
 				visualize_nerf_cameras(list, world2proj);
+			}
+
+			if (m_nerf.visualize_gt_cameras) {
+				visualize_gt_nerf_cameras(list, world2proj);
 			}
 
 			if (m_nerf.visualize_map_points) {
@@ -2863,6 +2884,12 @@ void Testbed::load_snapshot(const std::string& filepath_string) {
 
 void Testbed::load_camera_path(const std::string& filepath_string) {
 	m_camera_path.load(filepath_string, Matrix<float, 3, 4>::Identity());
+}
+
+void Testbed::AddGroundTruthTraj(const std::string& gt_path)
+{
+	m_nerf.training.dataset.add_gt_traj(gt_path);
+	m_nerf.visualize_gt_cameras = true;
 }
 
 NGP_NAMESPACE_END
