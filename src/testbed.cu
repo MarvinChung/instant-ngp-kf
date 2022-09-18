@@ -1122,8 +1122,8 @@ void Testbed::visualize_gt_nerf_cameras(ImDrawList* list, const Matrix<float, 4,
 	
 	for (int i = 0; i < m_nerf.training.dataset.gt_camera_traj.size(); ++i) {
 
-		// red camera (gt traj)
-		visualize_nerf_camera(list, world2proj, m_nerf.training.dataset.gt_camera_traj[i], aspect, 0x80ff0000);
+		// red blue camera (gt traj)
+		visualize_nerf_camera(list, world2proj, m_nerf.training.dataset.gt_camera_traj[i], aspect, 0xff4040ff);
 	}
 }
 
