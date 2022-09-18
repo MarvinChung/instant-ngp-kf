@@ -1015,5 +1015,32 @@ void NerfDataset::set_training_image(int frame_idx, const Eigen::Vector2i& image
 	metadata[frame_idx].rays = raymemory[frame_idx].data();
 }
 
+void NerfDataset::add_gt_traj(const std::string& gt_path)
+{
+	std::ifstream f{gt_path};
+	nlohmann::json transforms;
+	f >> transforms;
+
+	if (transforms.is_array()) {
+		gt_camera_traj.resize(transforms.size());
+
+		for (int j = 0; j < transforms.size(); ++j) {
+			auto& frame = transforms[j];
+			nlohmann::json& jsonmatrix_start = frame["xform"];
+			uint32_t id = frame["id"];
+			Eigen::Matrix<float, 3, 4> start;
+
+			for (int m = 0; m < 3; ++m) {
+				for (int n = 0; n < 4; ++n) {
+					start(m,n) = float(jsonmatrix_start[m][n]);
+				}
+			}
+
+			gt_camera_traj[id] = slam_matrix_to_ngp(start);
+		}
+	}
+}
+
+
 
 NGP_NAMESPACE_END

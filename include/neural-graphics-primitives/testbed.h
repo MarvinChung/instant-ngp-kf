@@ -280,6 +280,7 @@ public:
 	void add_sparse_point_cloud(std::vector<Eigen::Vector3f>& sparse_map_points_positions, std::vector<Eigen::Vector3f>& sparse_ref_map_points_positions);
 	void visualize_map_points(ImDrawList* list, const Eigen::Matrix<float, 4, 4>& world2proj);	
 	void visualize_nerf_cameras(ImDrawList* list, const Eigen::Matrix<float, 4, 4>& world2proj);
+	void visualize_gt_nerf_cameras(ImDrawList* list, const Eigen::Matrix<float, 4, 4>& world2proj);
 	nlohmann::json load_network_config(const filesystem::path& network_config_path);
 	void reload_network_from_file(const std::string& network_config_path);
 	void reload_network_from_json(const nlohmann::json& json, const std::string& config_base_path=""); // config_base_path is needed so that if the passed in json uses the 'parent' feature, we know where to look... be sure to use a filename, or if a directory, end with a trailing slash
@@ -367,6 +368,7 @@ public:
 	void draw_visualizations(ImDrawList* list, const Eigen::Matrix<float, 3, 4>& camera_matrix);
 	void update_camera(cudaStream_t stream);
 	std::tuple<TrainingXForm*, int> add_training_image(nlohmann::json frame, uint8_t *img, uint16_t *depth=nullptr, uint8_t *alpha=nullptr, uint8_t *mask=nullptr);
+	void AddGroundTruthTraj(const std::string& gt_path);
 	void train_and_render(bool skip_rendering);
 	filesystem::path training_data_path() const;
 	void init_window(int resw, int resh, bool hidden = false);
@@ -652,6 +654,8 @@ public:
 
 		bool visualize_map_points = false; //true;
 		bool visualize_cameras = true; 
+		bool visualize_gt_cameras = false; 
+
 		bool render_with_camera_distortion = false;
 		CameraDistortion render_distortion = {};
 
