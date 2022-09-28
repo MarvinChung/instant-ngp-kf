@@ -1888,7 +1888,7 @@ __global__ void compute_loss_kernel_train_nerf(
 
 		float density_derivative = network_to_density_derivative(float(local_network_output[3]), density_activation);
 
-		// distortion loss
+		// distortion loss from mip-NeRF 360
 		float ddistLdoutput = 0.f;
 		// if( k != compacted_numsteps-1 )
 		// {	

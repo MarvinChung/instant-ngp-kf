@@ -1081,7 +1081,7 @@ void Testbed::visualize_map_points(ImDrawList* list, const Matrix<float, 4, 4>& 
 
 	// std::cout << "[testbed.cu] visualize nerf triangulation map points number:" << m_nerf.map_points_positions.size() << std::endl;
 	for (auto &map_point : m_nerf.nerf_triangulation_map_points_positions) {
-		// green
+		// cyan
 		visualize_map_point(list, world2proj, map_point, 0x40ffff40);
 	}
 
@@ -1103,8 +1103,8 @@ void Testbed::visualize_nerf_cameras(ImDrawList* list, const Matrix<float, 4, 4>
 		auto res = m_nerf.training.dataset.metadata[i].resolution;
 		float aspect = float(res.x())/float(res.y());
 		// blue camera (reprojection error)
-		visualize_nerf_camera(list, world2proj, m_nerf.training.dataset.xforms[i]->start, aspect, 0x40ffff40);
-		visualize_nerf_camera(list, world2proj, m_nerf.training.dataset.xforms[i]->end, aspect, 0x40ffff40);
+		visualize_nerf_camera(list, world2proj, m_nerf.training.dataset.xforms[i]->start, aspect, 0x40ffff40); // gree
+		visualize_nerf_camera(list, world2proj, m_nerf.training.dataset.xforms[i]->end, aspect, 0x40ffff40);   //cyan
 
 		// white camera (reprojection error + photometric error)
 		visualize_nerf_camera(list, world2proj, m_nerf.training.transforms[i].start, aspect, 0x80ffffff);
@@ -1123,7 +1123,7 @@ void Testbed::visualize_gt_nerf_cameras(ImDrawList* list, const Matrix<float, 4,
 	for (int i = 0; i < m_nerf.training.dataset.gt_camera_traj.size(); ++i) {
 
 		// red camera (gt traj)
-		visualize_nerf_camera(list, world2proj, m_nerf.training.dataset.gt_camera_traj[i], aspect, 0x80ff0000);
+		visualize_nerf_camera(list, world2proj, m_nerf.training.dataset.gt_camera_traj[i], aspect, 0xff4040ff);
 	}
 }
 
