@@ -22,3 +22,9 @@
 [submodule "dependencies/dlss"]
 	path = dependencies/dlss
 	url = https://github.com/NVIDIA/DLSS
+[submodule "dependencies/OpenXR-SDK"]
+	path = dependencies/OpenXR-SDK
+	url = https://github.com/KhronosGroup/OpenXR-SDK.git
+[submodule "dependencies/zstr"]
+	path = dependencies/zstr
+	url = https://github.com/Tom94/zstr.git
