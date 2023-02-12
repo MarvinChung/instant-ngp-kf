@@ -296,6 +296,8 @@ public:
 			m_path = tokenize(str, "/");
 			m_absolute = !str.empty() && str[0] == '/';
 		}
+
+		m_path.erase(std::remove(std::begin(m_path), std::end(m_path), ""), std::end(m_path));
 	}
 
 	path &operator=(const path &path) {
@@ -321,11 +323,15 @@ public:
 		return os;
 	}
 
-	bool remove_file() {
+	bool remove_file() const {
 #if !defined(_WIN32)
 		return std::remove(str().c_str()) == 0;
 #else
-		return DeleteFileW(wstr().c_str()) != 0;
+		if (is_directory()) {
+			return RemoveDirectoryW(wstr().c_str()) != 0;
+		} else {
+			return DeleteFileW(wstr().c_str()) != 0;
+		}
 #endif
 	}
 
