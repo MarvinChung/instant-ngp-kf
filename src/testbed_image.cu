@@ -12,15 +12,16 @@
  *  @author Thomas Müller & Alex Evans, NVIDIA
  */
 
-#include <neural-graphics-primitives/common.h>
 #include <neural-graphics-primitives/common_device.cuh>
-#include <neural-graphics-primitives/render_buffer.h>
+#include <neural-graphics-primitives/common.h>
 #include <neural-graphics-primitives/random_val.cuh>
+#include <neural-graphics-primitives/render_buffer.h>
 #include <neural-graphics-primitives/testbed.h>
+#include <neural-graphics-primitives/tinyexr_wrapper.h>
 
 #include <tiny-cuda-nn/gpu_matrix.h>
-#include <tiny-cuda-nn/network.h>
 #include <tiny-cuda-nn/network_with_input_encoding.h>
+#include <tiny-cuda-nn/network.h>
 #include <tiny-cuda-nn/trainer.h>
 
 #include <fstream>
@@ -76,14 +77,20 @@ __global__ void stratify2_kernel(uint32_t n_elements, uint32_t log2_batch_size, 
 }
 
 __global__ void init_image_coords(
+	uint32_t sample_index,
 	Vector2f* __restrict__ positions,
+	float* __restrict__ depth_buffer,
 	Vector2i resolution,
-	Vector2i image_resolution,
-	float view_dist,
-	Vector2f image_pos,
+	float aspect,
+	Vector2f focal_length,
+	Matrix<float, 3, 4> camera_matrix,
 	Vector2f screen_center,
+	Vector3f parallax_shift,
 	bool snap_to_pixel_centers,
-	uint32_t sample_index
+	float plane_z,
+	float aperture_size,
+	Foveation foveation,
+	Buffer2DView<const uint8_t> hidden_area_mask
 ) {
 	uint32_t x = threadIdx.x + blockDim.x * blockIdx.x;
 	uint32_t y = threadIdx.y + blockDim.y * blockIdx.y;
@@ -92,49 +99,47 @@ __global__ void init_image_coords(
 		return;
 	}
 
-	uint32_t idx = x + resolution.x() * y;
-	positions[idx] = pixel_to_image_uv(
+	// The image is displayed on the plane [0.5, 0.5, 0.5] + [X, Y, 0] to facilitate
+	// a top-down view by default, while permitting general camera movements (for
+	// motion vectors and code sharing with 3D tasks).
+	// Hence: generate rays and intersect that plane.
+	Ray ray = pixel_to_ray(
 		sample_index,
 		{x, y},
 		resolution,
-		image_resolution,
+		focal_length,
+		camera_matrix,
 		screen_center,
-		view_dist,
-		image_pos,
-		snap_to_pixel_centers
+		parallax_shift,
+		snap_to_pixel_centers,
+		0.0f, // near distance
+		plane_z,
+		aperture_size,
+		foveation,
+		hidden_area_mask
 	);
+
+	// Intersect the Z=0.5 plane
+	float t = ray.is_valid() ? (0.5f - ray.o.z()) / ray.d.z() : -1.0f;
+
+	uint32_t idx = x + resolution.x() * y;
+	if (t <= 0.0f) {
+		depth_buffer[idx] = MAX_DEPTH();
+		positions[idx] = -Vector2f::Ones();
+		return;
+	}
+
+	Vector2f uv = ray(t).head<2>();
+
+	// Flip from world coordinates where Y goes up to image coordinates where Y goes down.
+	// Also, multiply the x-axis by the image's aspect ratio to make it have the right proportions.
+	uv = (uv - Vector2f::Constant(0.5f)).cwiseProduct(Vector2f{aspect, -1.0f}) + Vector2f::Constant(0.5f);
+
+	depth_buffer[idx] = t;
+	positions[idx] = uv;
 }
 
-// #define COLOR_SPACE_CONVERT convert to ycrcb experiment - causes some color shift tho it does lead to very slightly sharper edges. not a net win if you like colors :)
-#define CHROMA_SCALE 0.2f
-
-__global__ void colorspace_convert_image_half(Vector2i resolution, const char* __restrict__ texture) {
-	uint32_t x = blockIdx.x * blockDim.x + threadIdx.x;
-	uint32_t y = blockIdx.y * blockDim.y + threadIdx.y;
-	if (x >= resolution.x() || y >= resolution.y()) return;
-	__half val[4];
-	*(int2*)&val[0] = ((int2*)texture)[y * resolution.x() + x];
-	float R=val[0],G=val[1],B=val[2];
-	val[0]=(0.2126f * R + 0.7152f * G + 0.0722f * B);
-	val[1]=((-0.1146f * R - 0.3845f * G + 0.5f * B)+0.f)*CHROMA_SCALE;
-	val[2]=((0.5f * R - 0.4542f * G - 0.0458f * B)+0.f)*CHROMA_SCALE;
-	((int2*)texture)[y * resolution.x() + x] = *(int2*)&val[0];
-}
-
-__global__ void colorspace_convert_image_float(Vector2i resolution, const char* __restrict__ texture) {
-	uint32_t x = blockIdx.x * blockDim.x + threadIdx.x;
-	uint32_t y = blockIdx.y * blockDim.y + threadIdx.y;
-	if (x >= resolution.x() || y >= resolution.y()) return;
-	float val[4];
-	*(float4*)&val[0] = ((float4*)texture)[y * resolution.x() + x];
-	float R=val[0],G=val[1],B=val[2];
-	val[0]=(0.2126f * R + 0.7152f * G + 0.0722f * B);
-	val[1]=((-0.1146f * R - 0.3845f * G + 0.5f * B)+0.f)*CHROMA_SCALE;
-	val[2]=((0.5f * R - 0.4542f * G - 0.0458f * B)+0.f)*CHROMA_SCALE;
-	((float4*)texture)[y * resolution.x() + x] = *(float4*)&val[0];
-}
-
-__global__ void shade_kernel_image(Vector2i resolution, const Vector2f* __restrict__ positions, const Array3f* __restrict__ colors, Array4f* __restrict__ frame_buffer, float* __restrict__ depth_buffer, bool linear_colors) {
+__global__ void shade_kernel_image(Vector2i resolution, const Vector2f* __restrict__ positions, const Array3f* __restrict__ colors, Array4f* __restrict__ frame_buffer, bool linear_colors) {
 	uint32_t x = threadIdx.x + blockDim.x * blockIdx.x;
 	uint32_t y = threadIdx.y + blockDim.y * blockIdx.y;
 
@@ -147,7 +152,6 @@ __global__ void shade_kernel_image(Vector2i resolution, const Vector2f* __restri
 	const Vector2f uv = positions[idx];
 	if (uv.x() < 0.0f || uv.x() > 1.0f || uv.y() < 0.0f || uv.y() > 1.0f) {
 		frame_buffer[idx] = Array4f::Zero();
-		depth_buffer[idx] = 1e10f;
 		return;
 	}
 
@@ -157,16 +161,7 @@ __global__ void shade_kernel_image(Vector2i resolution, const Vector2f* __restri
 		color = srgb_to_linear(color);
 	}
 
-#ifdef COLOR_SPACE_CONVERT
-	float Y=color.x(), Cb =color.y()*(1.f/CHROMA_SCALE) -0.f, Cr = color.z() * (1.f/CHROMA_SCALE) - 0.f;
-	float R = Y                + 1.5748f * Cr;
-	float G = Y - 0.1873f * Cb - 0.4681 * Cr;
-	float B = Y + 1.8556f * Cb;
-	frame_buffer[idx] = {R, G, B, 1.0f};
-#else
 	frame_buffer[idx] = {color.x(), color.y(), color.z(), 1.0f};
-#endif
-	depth_buffer[idx] = 1.0f;
 }
 
 template <typename T, uint32_t stride>
@@ -230,59 +225,76 @@ void Testbed::train_image(size_t target_batch_size, bool get_loss_scalar, cudaSt
 	m_image.training.positions.enlarge(n_elements);
 	m_image.training.targets.enlarge(n_elements);
 
-	if (m_image.random_mode == ERandomMode::Halton) {
-		linear_kernel(halton23_kernel, 0, stream, n_elements, (size_t)batch_size * m_training_step, m_image.training.positions.data());
-	} else if (m_image.random_mode == ERandomMode::Sobol) {
-		linear_kernel(sobol2_kernel, 0, stream, n_elements, (size_t)batch_size * m_training_step, m_seed, m_image.training.positions.data());
-	} else {
-		generate_random_uniform<float>(stream, m_rng, n_elements * n_input_dims, (float*)m_image.training.positions.data());
-		if (m_image.random_mode == ERandomMode::Stratified) {
-			uint32_t log2_batch_size = 0;
-			if (!is_pot(batch_size, &log2_batch_size)) {
-				tlog::warning() << "Can't stratify a non-pot batch size";
-			} else if (log2_batch_size % 2 != 0) {
-				tlog::warning() << "Can't stratify a non-square batch size";
-			} else {
-				linear_kernel(stratify2_kernel, 0, stream, n_elements, log2_batch_size, m_image.training.positions.data());
+	auto generate_training_data = [&]() {
+		if (m_image.random_mode == ERandomMode::Halton) {
+			linear_kernel(halton23_kernel, 0, stream, n_elements, (size_t)batch_size * m_training_step, m_image.training.positions.data());
+		} else if (m_image.random_mode == ERandomMode::Sobol) {
+			linear_kernel(sobol2_kernel, 0, stream, n_elements, (size_t)batch_size * m_training_step, m_seed, m_image.training.positions.data());
+		} else {
+			generate_random_uniform<float>(stream, m_rng, n_elements * n_input_dims, (float*)m_image.training.positions.data());
+			if (m_image.random_mode == ERandomMode::Stratified) {
+				uint32_t log2_batch_size = 0;
+				if (!is_pot(batch_size, &log2_batch_size)) {
+					tlog::warning() << "Can't stratify a non-pot batch size";
+				} else if (log2_batch_size % 2 != 0) {
+					tlog::warning() << "Can't stratify a non-square batch size";
+				} else {
+					linear_kernel(stratify2_kernel, 0, stream, n_elements, log2_batch_size, m_image.training.positions.data());
+				}
 			}
 		}
-	}
 
-	if (m_image.type == EDataType::Float) {
-		linear_kernel(eval_image_kernel_and_snap<float, 3>, 0, stream,
-			n_elements,
-			(float*)m_image.data.data(),
-			m_image.training.positions.data(),
-			m_image.resolution,
-			(float*)m_image.training.targets.data(),
-			m_image.training.snap_to_pixel_centers,
-			m_image.training.linear_colors
-		);
-	} else {
-		linear_kernel(eval_image_kernel_and_snap<__half, 3>, 0, stream,
-			n_elements,
-			(__half*)m_image.data.data(),
-			m_image.training.positions.data(),
-			m_image.resolution,
-			(float*)m_image.training.targets.data(),
-			m_image.training.snap_to_pixel_centers,
-			m_image.training.linear_colors
-		);
-	}
+		if (m_image.type == EDataType::Float) {
+			linear_kernel(eval_image_kernel_and_snap<float, 3>, 0, stream,
+				n_elements,
+				(float*)m_image.data.data(),
+				m_image.training.positions.data(),
+				m_image.resolution,
+				(float*)m_image.training.targets.data(),
+				m_image.training.snap_to_pixel_centers,
+				m_image.training.linear_colors
+			);
+		} else {
+			linear_kernel(eval_image_kernel_and_snap<__half, 3>, 0, stream,
+				n_elements,
+				(__half*)m_image.data.data(),
+				m_image.training.positions.data(),
+				m_image.resolution,
+				(float*)m_image.training.targets.data(),
+				m_image.training.snap_to_pixel_centers,
+				m_image.training.linear_colors
+			);
+		}
+	};
+
+	generate_training_data();
 
 	GPUMatrix<float> training_batch_matrix((float*)(m_image.training.positions.data()), n_input_dims, batch_size);
 	GPUMatrix<float> training_target_matrix((float*)(m_image.training.targets.data()), n_output_dims, batch_size);
 
-	auto ctx = m_trainer->training_step(stream, training_batch_matrix, training_target_matrix);
-	m_training_step++;
 
-	if (get_loss_scalar) {
-		m_loss_scalar.update(m_trainer->loss(stream, *ctx));
+	{
+		auto ctx = m_trainer->training_step(stream, training_batch_matrix, training_target_matrix, nullptr, false);
+		if (get_loss_scalar) {
+			m_loss_scalar.update(m_trainer->loss(stream, *ctx));
+		}
 	}
+
+
+	m_trainer->optimizer_step(stream, 128);
+	m_training_step++;
 }
 
-void Testbed::render_image(CudaRenderBuffer& render_buffer, cudaStream_t stream) {
-	auto res = render_buffer.in_resolution();
+void Testbed::render_image(
+	cudaStream_t stream,
+	const CudaRenderBufferView& render_buffer,
+	const Vector2f& focal_length,
+	const Matrix<float, 3, 4>& camera_matrix,
+	const Vector2f& screen_center,
+	const Foveation& foveation,
+	int visualized_dimension
+) {
+	auto res = render_buffer.resolution;
 
 	// Make sure we have enough memory reserved to render at the requested resolution
 	size_t n_pixels = (size_t)res.x() * res.y();
@@ -290,18 +302,27 @@ void Testbed::render_image(CudaRenderBuffer& render_buffer, cudaStream_t stream)
 	m_image.render_coords.enlarge(n_elements);
 	m_image.render_out.enlarge(n_elements);
 
+	float plane_z = m_slice_plane_z + m_scale;
+	float aspect = (float)m_image.resolution.y() / (float)m_image.resolution.x();
+
 	// Generate 2D coords at which to query the network
 	const dim3 threads = { 16, 8, 1 };
 	const dim3 blocks = { div_round_up((uint32_t)res.x(), threads.x), div_round_up((uint32_t)res.y(), threads.y), 1 };
 	init_image_coords<<<blocks, threads, 0, stream>>>(
+		render_buffer.spp,
 		m_image.render_coords.data(),
+		render_buffer.depth_buffer,
 		res,
-		m_image.resolution,
-		m_scale,
-		m_image.pos,
-		m_screen_center - Vector2f::Constant(0.5f),
+		aspect,
+		focal_length,
+		camera_matrix,
+		screen_center,
+		m_parallax_shift,
 		m_snap_to_pixel_centers,
-		render_buffer.spp()
+		plane_z,
+		m_aperture_size,
+		foveation,
+		render_buffer.hidden_area_mask ? render_buffer.hidden_area_mask->const_view() : Buffer2DView<const uint8_t>{}
 	);
 
 	// Obtain colors for each 2D coord
@@ -328,10 +349,10 @@ void Testbed::render_image(CudaRenderBuffer& render_buffer, cudaStream_t stream)
 	}
 
 	if (!m_render_ground_truth) {
-		if (m_visualized_dimension >= 0) {
+		if (visualized_dimension >= 0) {
 			GPUMatrix<float> positions_matrix((float*)m_image.render_coords.data(), 2, n_elements);
 			GPUMatrix<float> colors_matrix((float*)m_image.render_out.data(), 3, n_elements);
-			m_network->visualize_activation(stream, m_visualized_layer, m_visualized_dimension, positions_matrix, colors_matrix);
+			m_network->visualize_activation(stream, m_visualized_layer, visualized_dimension, positions_matrix, colors_matrix);
 		} else {
 			GPUMatrix<float> positions_matrix((float*)m_image.render_coords.data(), 2, n_elements);
 			GPUMatrix<float> colors_matrix((float*)m_image.render_out.data(), 3, n_elements);
@@ -344,59 +365,52 @@ void Testbed::render_image(CudaRenderBuffer& render_buffer, cudaStream_t stream)
 		res,
 		m_image.render_coords.data(),
 		m_image.render_out.data(),
-		render_buffer.frame_buffer(),
-		render_buffer.depth_buffer(),
+		render_buffer.frame_buffer,
 		m_image.training.linear_colors
 	);
 }
 
-void Testbed::load_image() {
-	if (equals_case_insensitive(m_data_path.extension(), "exr")) {
-		load_exr_image();
-	} else if (equals_case_insensitive(m_data_path.extension(), "bin")) {
-		load_binary_image();
+void Testbed::load_image(const fs::path& data_path) {
+	if (equals_case_insensitive(data_path.extension(), "exr")) {
+		load_exr_image(data_path);
+	} else if (equals_case_insensitive(data_path.extension(), "bin")) {
+		load_binary_image(data_path);
 	} else {
-		load_stbi_image();
+		load_stbi_image(data_path);
 	}
 
-#ifdef COLOR_SPACE_CONVERT
-	const dim3 threads = { 32, 32, 1 };
-	const dim3 blocks = { div_round_up((uint32_t)m_image.resolution.x(), threads.x), div_round_up((uint32_t)m_image.resolution.x(), threads.y), 1 };
-	if (m_image.type == EDataType::Half)
-		colorspace_convert_image_half<<<blocks, threads, 0>>>(m_image.resolution, m_image.data.data());
-	else
-		colorspace_convert_image_float<<<blocks, threads, 0>>>(m_image.resolution, m_image.data.data());
-#endif
+	m_aabb = m_render_aabb = BoundingBox{Vector3f::Zero(), Vector3f::Ones()};
+	m_render_aabb_to_local = Matrix3f::Identity();
 
 	tlog::success()
 		<< "Loaded a " << (m_image.type == EDataType::Half ? "half" : "full") << "-precision image with "
 		<< m_image.resolution.x() << "x" << m_image.resolution.y() << " pixels.";
 }
 
-void Testbed::load_exr_image() {
-	if (!m_data_path.exists()) {
-		throw std::runtime_error{m_data_path.str() + " does not exist."};
+void Testbed::load_exr_image(const fs::path& data_path) {
+	if (!data_path.exists()) {
+		throw std::runtime_error{fmt::format("Image file '{}' does not exist.", data_path.str())};
 	}
 
-	tlog::info() << "Loading EXR image from " << m_data_path;
+	tlog::info() << "Loading EXR image from " << data_path;
 
 	// First step: load an image that we'd like to learn
-	GPUMemory<float> image = load_exr(m_data_path.str(), m_image.resolution.x(), m_image.resolution.y());
+	GPUMemory<float> image = load_exr_gpu(data_path, &m_image.resolution.x(), &m_image.resolution.y());
 	m_image.data.resize(image.size() * sizeof(float));
 	CUDA_CHECK_THROW(cudaMemcpy(m_image.data.data(), image.data(), image.size() * sizeof(float), cudaMemcpyDeviceToDevice));
 
 	m_image.type = EDataType::Float;
 }
 
-void Testbed::load_stbi_image() {
-	if (!m_data_path.exists()) {
-		throw std::runtime_error{m_data_path.str() + " does not exist."};
+void Testbed::load_stbi_image(const fs::path& data_path) {
+	if (!data_path.exists()) {
+		throw std::runtime_error{fmt::format("Image file '{}' does not exist.", data_path.str())};
 	}
 
-	tlog::info() << "Loading STBI image from " << m_data_path;
+	tlog::info() << "Loading STBI image from " << data_path;
 
 	// First step: load an image that we'd like to learn
-	GPUMemory<float> image = load_stbi(m_data_path.str(), m_image.resolution.x(), m_image.resolution.y());
+	GPUMemory<float> image = load_stbi_gpu(data_path, &m_image.resolution.x(), &m_image.resolution.y());
 	m_image.data.resize(image.size() * sizeof(float));
 	CUDA_CHECK_THROW(cudaMemcpy(m_image.data.data(), image.data(), image.size() * sizeof(float), cudaMemcpyDeviceToDevice));
 
@@ -404,56 +418,19 @@ void Testbed::load_stbi_image() {
 }
 
 
-void Testbed::load_binary_image() {
-	if (!m_data_path.exists()) {
-		throw std::runtime_error{m_data_path.str() + " does not exist."};
+void Testbed::load_binary_image(const fs::path& data_path) {
+	if (!data_path.exists()) {
+		throw std::runtime_error{fmt::format("Image file '{}' does not exist.", data_path.str())};
 	}
 
-	tlog::info() << "Loading binary image from " << m_data_path;
+	tlog::info() << "Loading binary image from " << data_path;
 
-	std::ifstream f(m_data_path.str(), std::ios::in | std::ios::binary);
+	std::ifstream f{native_string(data_path), std::ios::in | std::ios::binary};
 	f.read(reinterpret_cast<char*>(&m_image.resolution.y()), sizeof(int));
 	f.read(reinterpret_cast<char*>(&m_image.resolution.x()), sizeof(int));
 
 	size_t n_pixels = (size_t)m_image.resolution.x() * m_image.resolution.y();
 	m_image.data.resize(n_pixels * 4 * sizeof(__half));
-
-	// Can directly copy to GPU memory!
-	// TODO: uncomment once GDS works everywhere
-	// {
-	// 	int fd = open(m_data_path.string().c_str(), O_DIRECT);
-
-	// 	CUfileError_t status;
-	// 	CUfileDescr_t cf_descr;
-	// 	CUfileHandle_t cf_handle;
-	// 	memset((void *)&cf_descr, 0, sizeof(CUfileDescr_t));
-	// 	cf_descr.handle.fd = fd;
-	// 	cf_descr.type = CU_FILE_HANDLE_TYPE_OPAQUE_FD;
-	// 	status = cuFileHandleRegister(&cf_handle, &cf_descr);
-	// 	if (status.err != CU_FILE_SUCCESS) {
-	// 		close(fd);
-	// 		throw std::runtime_error{std::string{"cuFileHandleRegister fd "} + std::to_string(fd) + " status " + status.err};
-	// 	}
-
-	// 	status = cuFileBufRegister(m_image.data.data(), m_image.data.get_bytes(), 0);
-	// 	if (status.err != CU_FILE_SUCCESS) {
-	// 		cuFileHandleDeregister(cf_handle);
-	// 		close(fd);
-	// 		throw std::runtime_error{std::string{"buffer registration failed "} + status.err};
-	// 	}
-
-	// 	cuFileRead(cf_handle, m_image.data.data(), m_image.data.get_bytes(), 2 * sizeof(int), 0);
-
-	// 	status = cuFileBufDeregister(devPtr_base);
-	// 	if (status.err != CU_FILE_SUCCESS) {
-	// 		cuFileHandleDeregister(cf_handle);
-	// 		close(fd);
-	// 		throw std::runtime_error{std::string{"buffer deregistration failed "} + status.err};
-	// 	}
-
-	// 	cuFileHandleDeregister(cf_handle);
-	// 	close(fd);
-	// }
 
 	std::vector<__half> image(n_pixels * 4);
 	f.read(reinterpret_cast<char*>(image.data()), sizeof(__half) * image.size());

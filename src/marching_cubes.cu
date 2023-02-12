@@ -12,18 +12,15 @@
  *  @author Alex Evans, NVIDIA
  */
 
-#include <neural-graphics-primitives/common.h>
-#include <neural-graphics-primitives/common_device.cuh>
 #include <neural-graphics-primitives/bounding_box.cuh>
+#include <neural-graphics-primitives/common_device.cuh>
+#include <neural-graphics-primitives/common.h>
 #include <neural-graphics-primitives/random_val.cuh> // helpers to generate random values, directions
 #include <neural-graphics-primitives/thread_pool.h>
 
 #include <tiny-cuda-nn/gpu_memory.h>
 #include <filesystem/path.h>
 
-#define STB_IMAGE_WRITE_IMPLEMENTATION
-
-#include <stb_image/stb_image_write.h>
 #include <stdarg.h>
 
 #ifdef NGP_GUI
@@ -40,7 +37,6 @@
 
 using namespace Eigen;
 using namespace tcnn;
-namespace fs = filesystem;
 
 NGP_NAMESPACE_BEGIN
 
@@ -54,30 +50,28 @@ Vector3i get_marching_cubes_res(uint32_t res_1d, const BoundingBox &aabb) {
 }
 
 #ifdef NGP_GUI
-
 void glCheckError(const char* file, unsigned int line) {
-  GLenum errorCode = glGetError();
-  while (errorCode != GL_NO_ERROR) {
-    std::string fileString(file);
-    std::string error = "unknown error";
-    // clang-format off
-    switch (errorCode) {
-      case GL_INVALID_ENUM:      error = "GL_INVALID_ENUM"; break;
-      case GL_INVALID_VALUE:     error = "GL_INVALID_VALUE"; break;
-      case GL_INVALID_OPERATION: error = "GL_INVALID_OPERATION"; break;
-      case GL_STACK_OVERFLOW:    error = "GL_STACK_OVERFLOW"; break;
-      case GL_STACK_UNDERFLOW:   error = "GL_STACK_UNDERFLOW"; break;
-      case GL_OUT_OF_MEMORY:     error = "GL_OUT_OF_MEMORY"; break;
-    }
-    // clang-format on
+	GLenum errorCode = glGetError();
+	while (errorCode != GL_NO_ERROR) {
+		std::string fileString(file);
+		std::string error = "unknown error";
+		// clang-format off
+		switch (errorCode) {
+			case GL_INVALID_ENUM:      error = "GL_INVALID_ENUM"; break;
+			case GL_INVALID_VALUE:     error = "GL_INVALID_VALUE"; break;
+			case GL_INVALID_OPERATION: error = "GL_INVALID_OPERATION"; break;
+			case GL_STACK_OVERFLOW:    error = "GL_STACK_OVERFLOW"; break;
+			case GL_STACK_UNDERFLOW:   error = "GL_STACK_UNDERFLOW"; break;
+			case GL_OUT_OF_MEMORY:     error = "GL_OUT_OF_MEMORY"; break;
+		}
+		// clang-format on
 
-    tlog::error() << "OpenglError : file=" << file << " line=" << line << " error:" << error;
-    errorCode = glGetError();
-  }
+		tlog::error() << "OpenglError : file=" << file << " line=" << line << " error:" << error;
+		errorCode = glGetError();
+	}
 }
 
-
-bool check_shader(GLuint handle, const char* desc, bool program) {
+bool check_shader(uint32_t handle, const char* desc, bool program) {
 	GLint status = 0, log_length = 0;
 	if (program) {
 		glGetProgramiv(handle, GL_LINK_STATUS, &status);
@@ -102,13 +96,13 @@ bool check_shader(GLuint handle, const char* desc, bool program) {
 	return (GLboolean)status == GL_TRUE;
 }
 
-GLuint compile_shader(bool pixel, const char* code) {
+uint32_t compile_shader(bool pixel, const char* code) {
 	GLuint g_VertHandle = glCreateShader(pixel ? GL_FRAGMENT_SHADER : GL_VERTEX_SHADER );
-	const char* glsl_version = "#version 330\n";
+	const char* glsl_version = "#version 140\n";
 	const GLchar* strings[2] = { glsl_version, code};
 	glShaderSource(g_VertHandle, 2, strings, NULL);
 	glCompileShader(g_VertHandle);
-	if (!check_shader(g_VertHandle, pixel?"pixel":"vertex", false)) {
+	if (!check_shader(g_VertHandle, pixel? "pixel" : "vertex", false)) {
 		glDeleteShader(g_VertHandle);
 		return 0;
 	}
@@ -179,9 +173,9 @@ void draw_mesh_gl(
 
 	if (!program) {
 		vs = compile_shader(false, R"foo(
-layout (location = 0) in vec3 pos;
-layout (location = 1) in vec3 nor;
-layout (location = 2) in vec3 col;
+in vec3 pos;
+in vec3 nor;
+in vec3 col;
 out vec3 vtxcol;
 uniform mat4 camera;
 uniform vec2 f;
@@ -204,16 +198,11 @@ void main()
 }
 )foo");
 		ps = compile_shader(true, R"foo(
-layout (location = 0) out vec4 o;
+out vec4 o;
 in vec3 vtxcol;
 uniform int mode;
 void main() {
-	if (mode == 3) {
-		vec3 tricol = vec3((ivec3(923, 3572, 5423) * gl_PrimitiveID) & 255) * (1.0 / 255.0);
-		o = vec4(tricol, 1.0);
-	} else {
-		o = vec4(vtxcol, 1.0);
-	}
+	o = vec4(vtxcol, 1.0);
 }
 )foo");
 		program = glCreateProgram();
@@ -273,13 +262,13 @@ with z=1
 
 edges 8-11 go in +z direction from vertex 0-3
 */
-__global__ void gen_vertices(BoundingBox aabb, Vector3i res_3d, const float* __restrict__ density, int*__restrict__ vertidx_grid, Vector3f* verts_out, float thresh, uint32_t* __restrict__ counters) {
+__global__ void gen_vertices(BoundingBox render_aabb, Matrix3f render_aabb_to_local, Vector3i res_3d, const float* __restrict__ density, int*__restrict__ vertidx_grid, Vector3f* verts_out, float thresh, uint32_t* __restrict__ counters) {
 	uint32_t x = blockIdx.x * blockDim.x + threadIdx.x;
 	uint32_t y = blockIdx.y * blockDim.y + threadIdx.y;
 	uint32_t z = blockIdx.z * blockDim.z + threadIdx.z;
 	if (x>=res_3d.x() || y>=res_3d.y() || z>=res_3d.z()) return;
-	Vector3f scale=(aabb.max-aabb.min).cwiseQuotient(res_3d.cast<float>());
-	Vector3f offset=aabb.min;
+	Vector3f scale=(render_aabb.max-render_aabb.min).cwiseQuotient((res_3d-Vector3i::Ones()).cast<float>());
+	Vector3f offset=render_aabb.min;
 	uint32_t res2=res_3d.x()*res_3d.y();
 	uint32_t res3=res_3d.x()*res_3d.y()*res_3d.z();
 	uint32_t idx=x+y*res_3d.x()+z*res2;
@@ -293,7 +282,7 @@ __global__ void gen_vertices(BoundingBox aabb, Vector3i res_3d, const float* __r
 				vertidx_grid[idx]=vidx+1;
 				float prevf=f0,nextf=f1;
 				float dt=((thresh-prevf)/(nextf-prevf));
-				verts_out[vidx]=Vector3f{float(x)+dt, float(y), float(z)}.cwiseProduct(scale) + offset;
+				verts_out[vidx]=render_aabb_to_local.transpose() * (Vector3f{float(x)+dt, float(y), float(z)}.cwiseProduct(scale) + offset);
 			}
 		}
 	}
@@ -305,7 +294,7 @@ __global__ void gen_vertices(BoundingBox aabb, Vector3i res_3d, const float* __r
 				vertidx_grid[idx+res3]=vidx+1;
 				float prevf=f0,nextf=f1;
 				float dt=((thresh-prevf)/(nextf-prevf));
-				verts_out[vidx]=Vector3f{float(x), float(y)+dt, float(z)}.cwiseProduct(scale) + offset;
+				verts_out[vidx]=render_aabb_to_local.transpose() * (Vector3f{float(x), float(y)+dt, float(z)}.cwiseProduct(scale) + offset);
 			}
 		}
 	}
@@ -317,7 +306,7 @@ __global__ void gen_vertices(BoundingBox aabb, Vector3i res_3d, const float* __r
 				vertidx_grid[idx+res3*2]=vidx+1;
 				float prevf=f0,nextf=f1;
 				float dt=((thresh-prevf)/(nextf-prevf));
-				verts_out[vidx]=Vector3f{float(x), float(y), float(z)+dt}.cwiseProduct(scale) + offset;
+				verts_out[vidx]=render_aabb_to_local.transpose() * (Vector3f{float(x), float(y), float(z)+dt}.cwiseProduct(scale) + offset);
 			}
 		}
 	}
@@ -786,7 +775,7 @@ void compute_mesh_opt_gradients(
 	);
 }
 
-void marching_cubes_gpu(cudaStream_t stream, BoundingBox aabb, Vector3i res_3d, float thresh, const tcnn::GPUMemory<float>& density, tcnn::GPUMemory<Vector3f>& verts_out, tcnn::GPUMemory<uint32_t>& indices_out) {
+void marching_cubes_gpu(cudaStream_t stream, BoundingBox render_aabb, Matrix3f render_aabb_to_local, Vector3i res_3d, float thresh, const tcnn::GPUMemory<float>& density, tcnn::GPUMemory<Vector3f>& verts_out, tcnn::GPUMemory<uint32_t>& indices_out) {
 	GPUMemory<uint32_t> counters;
 
 	counters.enlarge(4);
@@ -801,7 +790,7 @@ void marching_cubes_gpu(cudaStream_t stream, BoundingBox aabb, Vector3i res_3d, 
 	const dim3 threads = { 4, 4, 4 };
 	const dim3 blocks = { div_round_up((uint32_t)res_3d.x(), threads.x), div_round_up((uint32_t)res_3d.y(), threads.y), div_round_up((uint32_t)res_3d.z(), threads.z) };
 	// count only
-	gen_vertices<<<blocks, threads, 0>>>(aabb, res_3d, density.data(), nullptr, nullptr, thresh, counters.data());
+	gen_vertices<<<blocks, threads, 0>>>(render_aabb, render_aabb_to_local, res_3d, density.data(), nullptr, nullptr, thresh, counters.data());
 	gen_faces<<<blocks, threads, 0>>>(res_3d, density.data(), nullptr, nullptr, thresh, counters.data());
 	std::vector<uint32_t> cpucounters; cpucounters.resize(4);
 	counters.copy_to_host(cpucounters);
@@ -812,7 +801,7 @@ void marching_cubes_gpu(cudaStream_t stream, BoundingBox aabb, Vector3i res_3d, 
 	verts_out.memset(0);
 	indices_out.resize(cpucounters[1]);
 	// actually generate verts
-	gen_vertices<<<blocks, threads, 0>>>(aabb, res_3d, density.data(), vertex_grid, verts_out.data(), thresh, counters.data()+2);
+	gen_vertices<<<blocks, threads, 0>>>(render_aabb, render_aabb_to_local, res_3d, density.data(), vertex_grid, verts_out.data(), thresh, counters.data()+2);
 	gen_faces<<<blocks, threads, 0>>>(res_3d, density.data(), vertex_grid, indices_out.data(), thresh, counters.data()+2);
 }
 
@@ -821,7 +810,7 @@ void save_mesh(
 	GPUMemory<Vector3f>& normals,
 	GPUMemory<Vector3f>& colors,
 	GPUMemory<uint32_t>& indices,
-	const char* outputname,
+	const fs::path& path,
 	bool unwrap_it,
 	float nerf_scale,
 	Vector3f nerf_offset
@@ -864,16 +853,17 @@ void save_mesh(
 				tex[x*3+y*3*texw+2]=b;
 			}
 		}
-		stbi_write_tga(fs::path(outputname).with_extension(".tga").str().c_str(), texw, texh, 3, tex);
+
+		write_stbi(path.with_extension(".tga"), texw, texh, 3, tex);
 		free(tex);
 	}
 
-	FILE* f = fopen(outputname,"wb");
+	FILE* f = native_fopen(path, "wb");
 	if (!f) {
-		throw std::runtime_error{"Failed to open " + std::string(outputname) + " for writing."};
+		throw std::runtime_error{fmt::format("Failed to open '{}' for writing", path.str())};
 	}
 
-	if (fs::path(outputname).extension() == "ply") {
+	if (equals_case_insensitive(path.extension(), "ply")) {
 		// ply file
 		fprintf(f,
 			"ply\n"
@@ -895,30 +885,35 @@ void save_mesh(
 			, (unsigned int)cpuverts.size()
 			, (unsigned int)cpuindices.size()/3
 		);
+
 		for (size_t i=0;i<cpuverts.size();++i) {
 			Vector3f p=(cpuverts[i]-nerf_offset)/nerf_scale;
 			Vector3f c=cpucolors[i];
 			Vector3f n=cpunormals[i].normalized();
 			unsigned char c8[3]={(unsigned char)tcnn::clamp(c.x()*255.f,0.f,255.f),(unsigned char)tcnn::clamp(c.y()*255.f,0.f,255.f),(unsigned char)tcnn::clamp(c.z()*255.f,0.f,255.f)};
-			fprintf(f,"%0.5f %0.5f %0.5f %0.3f %0.3f %0.3f %d %d %d\n", p.x(), p.y(), p.z(), n.x(), n.y(), n.z(), c8[0], c8[1], c8[2]);
+			fprintf(f, "%0.5f %0.5f %0.5f %0.3f %0.3f %0.3f %d %d %d\n", p.x(), p.y(), p.z(), n.x(), n.y(), n.z(), c8[0], c8[1], c8[2]);
 		}
+
 		for (size_t i=0;i<cpuindices.size();i+=3) {
-			fprintf(f,"3 %d %d %d\n", cpuindices[i+2], cpuindices[i+1], cpuindices[i+0]);
+			fprintf(f, "3 %d %d %d\n", cpuindices[i+2], cpuindices[i+1], cpuindices[i+0]);
 		}
 	} else {
 		// obj file
 		if (unwrap_it) {
 			fprintf(f, "mtllib nerf.mtl\n");
 		}
+
 		for (size_t i = 0; i < cpuverts.size(); ++i) {
 			Vector3f p = (cpuverts[i]-nerf_offset)/nerf_scale;
 			Vector3f c = cpucolors[i];
-			fprintf(f,"v %0.5f %0.5f %0.5f %0.3f %0.3f %0.3f\n", p.x(), p.y(), p.z(), tcnn::clamp(c.x(), 0.f, 1.f), tcnn::clamp(c.y(), 0.f, 1.f), tcnn::clamp(c.z(), 0.f, 1.f));
+			fprintf(f, "v %0.5f %0.5f %0.5f %0.3f %0.3f %0.3f\n", p.x(), p.y(), p.z(), tcnn::clamp(c.x(), 0.f, 1.f), tcnn::clamp(c.y(), 0.f, 1.f), tcnn::clamp(c.z(), 0.f, 1.f));
 		}
+
 		for (auto &v: cpunormals) {
 			auto n = v.normalized();
-			fprintf(f,"vn %0.5f %0.5f %0.5f\n", n.x(), n.y(), n.z());
+			fprintf(f, "vn %0.5f %0.5f %0.5f\n", n.x(), n.y(), n.z());
 		}
+
 		if (unwrap_it) {
 			for (size_t i = 0; i < cpuindices.size(); i++) {
 				uint32_t q = (uint32_t)(i/6);
@@ -933,8 +928,9 @@ void save_mesh(
 					case 4: x += 3+d; break;
 					case 5: x += 3+d; y += d; break;
 				}
-				fprintf(f,"vt %0.5f %0.5f\n", ((float)x+0.5f)/float(texw), 1.f-((float)y+0.5f)/float(texh));
+				fprintf(f, "vt %0.5f %0.5f\n", ((float)x+0.5f)/float(texw), 1.f-((float)y+0.5f)/float(texh));
 			}
+
 			fprintf(f, "g default\nusemtl nerf\ns 1\n");
 			for (size_t i = 0; i < cpuindices.size(); i += 3) {
 				fprintf(f,"f %u/%u/%u %u/%u/%u %u/%u/%u\n",
@@ -945,7 +941,7 @@ void save_mesh(
 			}
 		} else {
 			for (size_t i = 0; i < cpuindices.size(); i += 3) {
-				fprintf(f,"f %u//%u %u//%u %u//%u\n",
+				fprintf(f, "f %u//%u %u//%u %u//%u\n",
 					cpuindices[i+2]+1, cpuindices[i+2]+1, cpuindices[i+1]+1, cpuindices[i+1]+1, cpuindices[i+0]+1, cpuindices[i+0]+1
 				);
 			}
@@ -954,7 +950,7 @@ void save_mesh(
 	fclose(f);
 }
 
-void save_density_grid_to_png(const GPUMemory<float>& density, const char* filename, Vector3i res3d, float thresh, bool swap_y_z, float density_range) {
+void save_density_grid_to_png(const GPUMemory<float>& density, const fs::path& path, Vector3i res3d, float thresh, bool swap_y_z, float density_range) {
 	float density_scale = 128.f / density_range; // map from -density_range to density_range into 0-255
 	std::vector<float> density_cpu;
 	density_cpu.resize(density.size());
@@ -1021,9 +1017,9 @@ void save_density_grid_to_png(const GPUMemory<float>& density, const char* filen
 		}
 	}
 
-	stbi_write_png(filename, w, h, 1, pngpixels, w);
+	write_stbi(path, w, h, 1, pngpixels);
 
-	tlog::success() << "Wrote density PNG to " << filename;
+	tlog::success() << "Wrote density PNG to " << path.str();
 	tlog::info()
 		<< "  #lattice points=" << N
 		<< " #zero-x voxels=" << num_voxels << " (" << ((num_voxels*100.0)/N) << "%%)"
@@ -1035,7 +1031,7 @@ void save_density_grid_to_png(const GPUMemory<float>& density, const char* filen
 // Distinct from `save_density_grid_to_png` not just in that is writes RGBA, but also
 // in that it writes a sequence of PNGs rather than a single large PNG.
 // TODO: make both methods configurable to do either single PNG or PNG sequence.
-void save_rgba_grid_to_png_sequence(const GPUMemory<Array4f>& rgba, const char* path, Vector3i res3d, bool swap_y_z) {
+void save_rgba_grid_to_png_sequence(const GPUMemory<Array4f>& rgba, const fs::path& path, Vector3i res3d, bool swap_y_z) {
 	std::vector<Array4f> rgba_cpu;
 	rgba_cpu.resize(rgba.size());
 	rgba.copy_to_host(rgba_cpu);
@@ -1050,7 +1046,7 @@ void save_rgba_grid_to_png_sequence(const GPUMemory<Array4f>& rgba, const char* 
 	auto progress = tlog::progress(res3d.z());
 
 	std::atomic<int> n_saved{0};
-	ThreadPool{}.parallelFor<int>(0, res3d.z(), [&](int z) {
+	ThreadPool{}.parallel_for<int>(0, res3d.z(), [&](int z) {
 		uint8_t* pngpixels = (uint8_t*)malloc(size_t(w) * size_t(h) * 4);
 		uint8_t* dst = pngpixels;
 		for (int y = 0; y < h; ++y) {
@@ -1062,15 +1058,50 @@ void save_rgba_grid_to_png_sequence(const GPUMemory<Array4f>& rgba, const char* 
 				*dst++ = (uint8_t)tcnn::clamp(rgba_cpu[i].w() * 255.f, 0.f, 255.f);
 			}
 		}
-		// write slice
-		char filename[256];
-		snprintf(filename, sizeof(filename), "%s/%04d_%dx%d.png", path, z, w, h);
-		stbi_write_png(filename, w, h, 4, pngpixels, w*4);
+
+		write_stbi(path / fmt::format("{:04d}_{}x{}.png", z, w, h), w, h, 4, pngpixels);
 		free(pngpixels);
 
 		progress.update(++n_saved);
 	});
 	tlog::success() << "Wrote RGBA PNG sequence to " << path;
+}
+
+void save_rgba_grid_to_raw_file(const GPUMemory<Array4f>& rgba, const fs::path& path, Vector3i res3d, bool swap_y_z, int cascade) {
+	std::vector<Array4f> rgba_cpu;
+	rgba_cpu.resize(rgba.size());
+	rgba.copy_to_host(rgba_cpu);
+
+	if (swap_y_z) {
+		res3d = {res3d.x(), res3d.z(), res3d.y()};
+	}
+
+	uint32_t w = res3d.x();
+	uint32_t h = res3d.y();
+	uint32_t d = res3d.z();
+
+	auto actual_path = path / fmt::format("{}x{}x{}_{}.bin", w, h, d, cascade);
+	FILE* f = native_fopen(actual_path, "wb");
+	if (!f)
+		return ;
+	const static float zero[4]={0.f,0.f,0.f,0.f};
+	int border = 1; // extra ring of voxels to make the donut hole smaller
+	for (int z = 0; z < d; ++z) {
+		for (int y = 0; y < h; ++y) {
+			for (int x = 0; x < w; ++x) {
+				size_t i = swap_y_z ? (x + z*res3d.x() + y*res3d.x()*res3d.z()) : (x + (res3d.y()-1-y)*res3d.x() + z*res3d.x()*res3d.y());
+				float* rgba = (float*)&rgba_cpu[i];
+				// the intention is that if cascade > 0, we have set up the render aabb such that we are outputing exactly one cascade of the nerf
+				// we then punch a transparent hole in the middle of each cascade, so that they fit together when placed on top of each other.
+				if (cascade && x>=res3d.x()/4+border && y>=res3d.y()/4+border && z>=res3d.z()/4+border && x<res3d.x()-res3d.x()/4-border && y<res3d.y()-res3d.y()/4-border && z<res3d.z()-res3d.z()/4-border)
+					fwrite(zero, sizeof(float), 4, f);
+				else
+					fwrite(rgba, sizeof(float), 4, f);
+			}
+		}
+	}
+	fclose(f);
+	tlog::success() << "Wrote RGBA raw file to " << actual_path.str();
 }
 
 NGP_NAMESPACE_END

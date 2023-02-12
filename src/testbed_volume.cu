@@ -12,8 +12,8 @@
  *  @author Thomas Müller & Alex Evans, NVIDIA
  */
 
-#include <neural-graphics-primitives/common.h>
 #include <neural-graphics-primitives/common_device.cuh>
+#include <neural-graphics-primitives/common.h>
 #include <neural-graphics-primitives/random_val.cuh> // helpers to generate random values, directions
 #include <neural-graphics-primitives/render_buffer.h>
 #include <neural-graphics-primitives/testbed.h>
@@ -21,8 +21,8 @@
 
 #include <tiny-cuda-nn/common_device.h>
 #include <tiny-cuda-nn/gpu_matrix.h>
-#include <tiny-cuda-nn/network.h>
 #include <tiny-cuda-nn/network_with_input_encoding.h>
+#include <tiny-cuda-nn/network.h>
 #include <tiny-cuda-nn/trainer.h>
 
 #include <nanovdb/NanoVDB.h>
@@ -215,12 +215,14 @@ __global__ void init_rays_volume(
 	Vector3f parallax_shift,
 	bool snap_to_pixel_centers,
 	BoundingBox aabb,
+	float near_distance,
 	float plane_z,
-	float dof,
-	const float* __restrict__ envmap_data,
-	const Vector2i envmap_resolution,
-	Array4f* __restrict__ framebuffer,
-	float* __restrict__ depthbuffer,
+	float aperture_size,
+	Foveation foveation,
+	Buffer2DView<const Array4f> envmap,
+	Array4f* __restrict__ frame_buffer,
+	float* __restrict__ depth_buffer,
+	Buffer2DView<const uint8_t> hidden_area_mask,
 	default_rng_t rng,
 	const uint8_t *bitgrid,
 	float distance_scale,
@@ -237,22 +239,44 @@ __global__ void init_rays_volume(
 	uint32_t idx = x + resolution.x() * y;
 	rng.advance(idx<<8);
 	if (plane_z < 0) {
-		dof = 0.0;
+		aperture_size = 0.0;
 	}
-	Ray ray = pixel_to_ray(sample_index, {x, y}, resolution, focal_length, camera_matrix, screen_center, parallax_shift, snap_to_pixel_centers, plane_z, dof);
+
+	Ray ray = pixel_to_ray(
+		sample_index,
+		{x, y},
+		resolution,
+		focal_length,
+		camera_matrix,
+		screen_center,
+		parallax_shift,
+		snap_to_pixel_centers,
+		near_distance,
+		plane_z,
+		aperture_size,
+		foveation,
+		hidden_area_mask
+	);
+
+	if (!ray.is_valid()) {
+		depth_buffer[idx] = MAX_DEPTH();
+		return;
+	}
+
 	ray.d = ray.d.normalized();
 	auto box_intersection = aabb.ray_intersect(ray.o, ray.d);
 	float t = max(box_intersection.x(), 0.0f);
-	ray.o = ray.o + (t + 1e-6f) * ray.d;
+	ray.advance(t + 1e-6f);
 	float scale = distance_scale / global_majorant;
+
 	if (t >= box_intersection.y() || !walk_to_next_event(rng, aabb, ray.o, ray.d, bitgrid, scale)) {
-		framebuffer[idx] = proc_envmap_render(ray.d, up_dir, sun_dir, sky_col);
-		depthbuffer[idx] = 1e10f;
+		frame_buffer[idx] = proc_envmap_render(ray.d, up_dir, sun_dir, sky_col);
+		depth_buffer[idx] = MAX_DEPTH();
 	} else {
 		uint32_t dstidx = atomicAdd(pixel_counter, 1);
 		positions[dstidx] = ray.o;
 		payloads[dstidx] = {ray.d, Array4f::Constant(0.f), idx};
-		depthbuffer[idx] = camera_matrix.col(2).dot(ray.o - camera_matrix.col(3));
+		depth_buffer[idx] = camera_matrix.col(2).dot(ray.o - camera_matrix.col(3));
 	}
 }
 
@@ -275,8 +299,7 @@ __global__ void volume_render_kernel_gt(
 	float distance_scale,
 	float albedo,
 	float scattering,
-	Array4f* __restrict__ framebuffer,
-	float* __restrict__ depthbuffer
+	Array4f* __restrict__ frame_buffer
 ) {
 	uint32_t idx = threadIdx.x + blockDim.x * blockIdx.x;
 	if (idx>=n_pixels || idx>=pixel_counter_in[0])
@@ -324,7 +347,7 @@ __global__ void volume_render_kernel_gt(
 	} else {
 		col = proc_envmap_render(dir, up_dir, sun_dir, sky_col);
 	}
-	framebuffer[pixidx] = col;
+	frame_buffer[pixidx] = col;
 }
 
 __global__ void volume_render_kernel_step(
@@ -350,8 +373,7 @@ __global__ void volume_render_kernel_step(
 	float distance_scale,
 	float albedo,
 	float scattering,
-	Array4f* __restrict__ framebuffer,
-	float* __restrict__ depthbuffer,
+	Array4f* __restrict__ frame_buffer,
 	bool force_finish_ray
 ) {
 	uint32_t idx = threadIdx.x + blockDim.x * blockIdx.x;
@@ -381,23 +403,25 @@ __global__ void volume_render_kernel_step(
 	payload.col.w() += alpha;
 	if (payload.col.w() > 0.99f || !walk_to_next_event(rng, aabb, pos, dir, bitgrid, scale) || force_finish_ray) {
 		payload.col += (1.f-payload.col.w()) * proc_envmap_render(dir, up_dir, sun_dir, sky_col);
-		framebuffer[pixidx] = payload.col;
+		frame_buffer[pixidx] = payload.col;
 		return;
 	}
 	uint32_t dstidx = atomicAdd(pixel_counter_out, 1);
-	positions_out[dstidx]=pos;
-	payloads_out[dstidx]=payload;
+	positions_out[dstidx] = pos;
+	payloads_out[dstidx] = payload;
 }
 
-void Testbed::render_volume(CudaRenderBuffer& render_buffer,
+void Testbed::render_volume(
+	cudaStream_t stream,
+	const CudaRenderBufferView& render_buffer,
 	const Vector2f& focal_length,
 	const Matrix<float, 3, 4>& camera_matrix,
 	const Vector2f& screen_center,
-	cudaStream_t stream
+	const Foveation& foveation
 ) {
 	float plane_z = m_slice_plane_z + m_scale;
 	float distance_scale = 1.f/std::max(m_volume.inv_distance_scale,0.01f);
-	auto res = render_buffer.in_resolution();
+	auto res = render_buffer.resolution;
 
 	size_t n_pixels = (size_t)res.x() * res.y();
 	for (uint32_t i=0;i<2;++i) {
@@ -412,7 +436,7 @@ void Testbed::render_volume(CudaRenderBuffer& render_buffer,
 	const dim3 threads = { 16, 8, 1 };
 	const dim3 blocks = { div_round_up((uint32_t)res.x(), threads.x), div_round_up((uint32_t)res.y(), threads.y), 1 };
 	init_rays_volume<<<blocks, threads, 0, stream>>>(
-		render_buffer.spp(),
+		render_buffer.spp,
 		m_volume.pos[0].data(),
 		m_volume.payload[0].data(),
 		m_volume.hit_counter.data(),
@@ -420,15 +444,17 @@ void Testbed::render_volume(CudaRenderBuffer& render_buffer,
 		focal_length,
 		camera_matrix,
 		screen_center,
-		get_scaled_parallax_shift(),
+		m_parallax_shift,
 		m_snap_to_pixel_centers,
 		m_render_aabb,
+		m_render_near_distance,
 		plane_z,
-		m_dof,
-		m_envmap.envmap->params_inference(),
-		m_envmap.resolution,
-		render_buffer.frame_buffer(),
-		render_buffer.depth_buffer(),
+		m_aperture_size,
+		foveation,
+		m_envmap.inference_view(),
+		render_buffer.frame_buffer,
+		render_buffer.depth_buffer,
+		render_buffer.hidden_area_mask ? render_buffer.hidden_area_mask->const_view() : Buffer2DView<const uint8_t>{},
 		m_rng,
 		m_volume.bitgrid.data(),
 		distance_scale,
@@ -464,8 +490,7 @@ void Testbed::render_volume(CudaRenderBuffer& render_buffer,
 			distance_scale,
 			std::min(m_volume.albedo,0.995f),
 			m_volume.scattering,
-			render_buffer.frame_buffer(),
-			render_buffer.depth_buffer()
+			render_buffer.frame_buffer
 		);
 		m_rng.advance(n_pixels*256);
 	} else {
@@ -506,8 +531,7 @@ void Testbed::render_volume(CudaRenderBuffer& render_buffer,
 				distance_scale,
 				std::min(m_volume.albedo,0.995f),
 				m_volume.scattering,
-				render_buffer.frame_buffer(),
-				render_buffer.depth_buffer(),
+				render_buffer.frame_buffer,
 				(iter>=max_iter-1)
 			);
 			m_rng.advance(n_pixels*256);
@@ -547,12 +571,12 @@ struct NanoVDBMetaData
 };
 static_assert(sizeof(NanoVDBMetaData) == 176, "nanovdb padding error");
 
-void Testbed::load_volume() {
-	if (!m_data_path.exists()) {
-		throw std::runtime_error{m_data_path.str() + " does not exist."};
+void Testbed::load_volume(const fs::path& data_path) {
+	if (!data_path.exists()) {
+		throw std::runtime_error{data_path.str() + " does not exist."};
 	}
-	tlog::info() << "Loading NanoVDB file from " << m_data_path;
-	std::ifstream f(m_data_path.str(), std::ios::in | std::ios::binary);
+	tlog::info() << "Loading NanoVDB file from " << data_path;
+	std::ifstream f{native_string(data_path), std::ios::in | std::ios::binary};
 	NanoVDBFileHeader header;
 	NanoVDBMetaData metadata;
 	f.read(reinterpret_cast<char*>(&header), sizeof(header));
@@ -582,37 +606,43 @@ void Testbed::load_volume() {
 	m_volume.nanovdb_grid.copy_from_host(cpugrid);
 	const nanovdb::FloatGrid* grid = reinterpret_cast<const nanovdb::FloatGrid*>(cpugrid.data());
 
-	float mn=1e10f,mx=-1e10f;
+	float mn = 10000.0f, mx = -10000.0f;
 	bool hmm = grid->hasMinMax();
 	//grid->tree().extrema(mn,mx);
-	int  xsize = std::max(1,metadata.indexBBox[1][0]-metadata.indexBBox[0][0]);
-	int ysize = std::max(1,metadata.indexBBox[1][1]-metadata.indexBBox[0][1]);
-	int zsize = std::max(1,metadata.indexBBox[1][2]-metadata.indexBBox[0][2]);
-	float maxsize=std::max(std::max(xsize,ysize),zsize);
-	float scale = 1.f/maxsize;
+	int xsize = std::max(1, metadata.indexBBox[1][0] - metadata.indexBBox[0][0]);
+	int ysize = std::max(1, metadata.indexBBox[1][1] - metadata.indexBBox[0][1]);
+	int zsize = std::max(1, metadata.indexBBox[1][2] - metadata.indexBBox[0][2]);
+	float maxsize = std::max(std::max(xsize, ysize), zsize);
+	float scale = 1.0f / maxsize;
 	m_aabb = m_render_aabb = BoundingBox{
-		Vector3f{0.5f-xsize*scale*0.5f,0.5f-ysize*scale*0.5f,0.5f-zsize*scale*0.5f},
-		Vector3f{0.5f+xsize*scale*0.5f,0.5f+ysize*scale*0.5f,0.5f+zsize*scale*0.5f}
+		Vector3f{0.5f - xsize * scale * 0.5f, 0.5f - ysize * scale * 0.5f, 0.5f - zsize * scale * 0.5f},
+		Vector3f{0.5f + xsize * scale * 0.5f, 0.5f + ysize * scale * 0.5f, 0.5f + zsize * scale * 0.5f},
 	};
+	m_render_aabb_to_local = Matrix3f::Identity();
+
 	m_volume.world2index_scale = maxsize;
-	m_volume.world2index_offset= Vector3f{(metadata.indexBBox[0][0]+metadata.indexBBox[1][0])*0.5f-0.5f*maxsize,(metadata.indexBBox[0][1]+metadata.indexBBox[1][1])*0.5f-0.5f*maxsize,(metadata.indexBBox[0][2]+metadata.indexBBox[1][2])*0.5f-0.5f*maxsize};
+	m_volume.world2index_offset = Vector3f{
+		(metadata.indexBBox[0][0] + metadata.indexBBox[1][0]) * 0.5f - 0.5f * maxsize,
+		(metadata.indexBBox[0][1] + metadata.indexBBox[1][1]) * 0.5f - 0.5f * maxsize,
+		(metadata.indexBBox[0][2] + metadata.indexBBox[1][2]) * 0.5f - 0.5f * maxsize,
+	};
 
 	auto acc = grid->tree().getAccessor();
 	std::vector<uint8_t> bitgrid;
-	bitgrid.resize(128*128*128/8);
-	for (int i=metadata.indexBBox[0][0];i<metadata.indexBBox[1][0];++i)
-	for (int j=metadata.indexBBox[0][1];j<metadata.indexBBox[1][1];++j)
-	for (int k=metadata.indexBBox[0][2];k<metadata.indexBBox[1][2];++k) {
-		float d = acc.getValue({i,j,k});
-		if (d>mx) mx=d;
-		if (d<mn) mn=d;
-		if (d>0.001f) {
-			float fx=((i+0.5f)-m_volume.world2index_offset.x())/m_volume.world2index_scale;
-			float fy=((j+0.5f)-m_volume.world2index_offset.y())/m_volume.world2index_scale;
-			float fz=((k+0.5f)-m_volume.world2index_offset.z())/m_volume.world2index_scale;
-			uint32_t bitidx = tcnn::morton3D(int(fx*128.f+0.5f),int(fy*128.f+0.5f),int(fz*128.f+0.5f));
-			if (bitidx<128*128*128)
-				bitgrid[bitidx/8]|=1<<(bitidx&7);
+	bitgrid.resize(128 * 128 * 128 / 8);
+	for (int i = metadata.indexBBox[0][0]; i < metadata.indexBBox[1][0]; ++i)
+	for (int j = metadata.indexBBox[0][1]; j < metadata.indexBBox[1][1]; ++j)
+	for (int k = metadata.indexBBox[0][2]; k < metadata.indexBBox[1][2]; ++k) {
+		float d = acc.getValue({i, j, k});
+		if (d > mx) mx = d;
+		if (d < mn) mn = d;
+		if (d > 0.001f) {
+			float fx = ((i + 0.5f) - m_volume.world2index_offset.x()) / m_volume.world2index_scale;
+			float fy = ((j + 0.5f) - m_volume.world2index_offset.y()) / m_volume.world2index_scale;
+			float fz = ((k + 0.5f) - m_volume.world2index_offset.z()) / m_volume.world2index_scale;
+			uint32_t bitidx = tcnn::morton3D(int(fx * 128.0f + 0.5f), int(fy * 128.0f + 0.5f), int(fz * 128.0f + 0.5f));
+			if (bitidx < 128 * 128 * 128)
+				bitgrid[bitidx / 8] |= 1 << (bitidx & 7);
 		}
 	}
 	m_volume.bitgrid.enlarge(bitgrid.size());
