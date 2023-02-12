@@ -28,3 +28,6 @@
 [submodule "dependencies/zstr"]
 	path = dependencies/zstr
 	url = https://github.com/Tom94/zstr.git
+[submodule "dependencies/zlib"]
+	path = dependencies/zlib
+	url = https://github.com/Tom94/zlib.git
