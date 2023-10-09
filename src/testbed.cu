@@ -744,8 +744,9 @@ void Testbed::imgui() {
 					ImGui::Checkbox("Visualize gt cameras", &m_nerf.visualize_gt_cameras);
 				}
 
-				ImGui::SameLine();
-				ImGui::Checkbox("Visualize map points", &m_nerf.visualize_map_points);
+				ImGui::Checkbox("Visualize ORB-SLAM2 map points", &m_nerf.visualize_orbslam2_map_points);
+				ImGui::Checkbox("Visualize Ray-casting triangulation map points", &m_nerf.visualize_ray_casting_triangulation_map_points);
+
 
 				accum_reset |= ImGui::SliderInt("Show acceleration", &m_nerf.show_accel, -1, 7);
 			}
@@ -1077,13 +1078,17 @@ void Testbed::imgui() {
 	ImGui::End();
 }
 
-void Testbed::visualize_map_points(ImDrawList* list, const Matrix<float, 4, 4>& world2proj) {
-
+void Testbed::visualize_ray_casting_triangulation_map_points(ImDrawList* list, const Matrix<float, 4, 4>& world2proj) {
 	// std::cout << "[testbed.cu] visualize nerf triangulation map points number:" << m_nerf.map_points_positions.size() << std::endl;
 	for (auto &map_point : m_nerf.nerf_triangulation_map_points_positions) {
 		// green
 		visualize_map_point(list, world2proj, map_point, 0x40ffff40);
 	}
+
+}
+
+void Testbed::visualize_orbslam2_map_points(ImDrawList* list, const Matrix<float, 4, 4>& world2proj) {
+
 
 	// std::cout << "[testbed.cu] visualize orb-slam triangulation map points number:" << m_nerf.sparse_map_points_positions.size() << std::endl;
 	for (auto &map_point : m_nerf.sparse_map_points_positions) {
@@ -1158,8 +1163,12 @@ void Testbed::draw_visualizations(ImDrawList* list, const Matrix<float, 3, 4>& c
 				visualize_gt_nerf_cameras(list, world2proj);
 			}
 
-			if (m_nerf.visualize_map_points) {
-				visualize_map_points(list, world2proj);
+			if (m_nerf.visualize_ray_casting_triangulation_map_points) {
+				visualize_ray_casting_triangulation_map_points(list, world2proj);
+			}
+
+			if (m_nerf.visualize_orbslam2_map_points) {
+				visualize_orbslam2_map_points(list, world2proj);
 			}
 
 		}
